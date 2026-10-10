@@ -69,9 +69,13 @@ The size stays last, so Obsidian keeps applying it. If you remove the plugin, yo
 
 ## Known limits
 
-- Images inside tables, callouts, quotes, lists and headings, and images in embedded notes, are shown but cannot be changed with the toolbar or moved by dragging.
+- Images inside tables, callouts, quotes, lists and headings, and images in embedded notes, stay in line with text. The toolbar and dragging do not act on them.
 - A dragged image lands at the start of a block, not in the middle of a paragraph, because a note is one stream of text.
 - Live Preview shows a blank line as slightly taller than the paragraph spacing in Reading view, so the text beside a tall image can break at a slightly different word.
+- In Reading view, right-clicking an image opens Obsidian's image viewer, so the layout choices are not in a menu there. Switch to Live Preview to change a layout.
+- Very small images (about 32 pixels or less) are covered by Obsidian's own resize corner, so a click does not select them, even without this plugin. Use the commands to change their layout.
+- The first time you scroll up through a long note in Reading view, text beside a wrapped image can shift once while Obsidian measures sections it has not shown yet.
+- If you type layout words by hand, write them exactly as shown above, in lower case and without spaces around the `|`.
 - PDF export uses Arial unless you set a text font in Obsidian's Appearance settings, so line breaks may differ from the screen.
 - Desktop only for now. Phone and tablet support is planned.
 
