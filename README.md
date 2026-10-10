@@ -37,7 +37,7 @@ Press on an image and drag it. A copy follows the pointer, and a line shows wher
 
 ### Other ways to choose a layout
 
-The same choices are in the right-click menu of an image (in Live Preview and Reading view) and in the command palette (search for "image").
+The same choices are in the right-click menu of an image in Live Preview, and in the command palette (search for "wrap" or "spacing").
 
 ## Settings
 

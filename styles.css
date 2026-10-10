@@ -55,7 +55,8 @@ p > img:is([alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt
 	position: relative;
 	z-index: 1;
 	margin-top: 0;
-	margin-bottom: 0.5em;
+	/* Not em: in Live Preview the image's line has font-size 0, which would make this 0 there only. */
+	margin-bottom: calc(var(--font-text-size, 16px) / 2);
 }
 
 .image-embed:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="|wrap-left"]),
@@ -106,7 +107,8 @@ p > img:is([alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt
  * A line that holds only a wrapped image takes no height of its own, so the float's top meets the
  * first line of text beside it (and a top-and-bottom image is spaced only by its padding).
  */
-.itw-has-wrap .cm-content > .cm-line:is(.itw-image-line-left, .itw-image-line-right, .itw-image-line-block) {
+/* Live Preview only: Source mode shows the link text on this line. */
+.is-live-preview .itw-has-wrap .cm-content > .cm-line:is(.itw-image-line-left, .itw-image-line-right, .itw-image-line-block) {
 	font-size: 0;
 	line-height: 0;
 	padding-block: 0;
@@ -115,7 +117,7 @@ p > img:is([alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt
 /* ---------- Text beside a float, Live Preview ---------- */
 
 /* Headings, code, rules and footnotes clear floats by default; that leaves a gap CodeMirror cannot see. */
-.itw-has-wrap .cm-content > .cm-line {
+.is-live-preview .itw-has-wrap .cm-content > .cm-line {
 	clear: none;
 }
 
@@ -123,7 +125,7 @@ p > img:is([alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt
  * Lines with a hanging indent (lists, quotes) measure it at render time; beside a float that would
  * include the image width. As their own formatting context they sit beside the image as a whole box.
  */
-.itw-has-wrap .cm-content > .cm-line:is(.HyperMD-list-line, .HyperMD-quote, .HyperMD-hr, .HyperMD-codeblock, [style*="text-indent"]) {
+.is-live-preview .itw-has-wrap .cm-content > .cm-line:is(.HyperMD-list-line, .HyperMD-quote, .HyperMD-hr, .HyperMD-codeblock, [style*="text-indent"]) {
 	display: flow-root;
 }
 

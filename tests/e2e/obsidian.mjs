@@ -146,11 +146,17 @@ export async function setWindowSize(page, width, height) {
 export async function reloadPlugin(page, cfg = config()) {
 	installPlugin(cfg);
 	// First open of the vault asks whether to trust its plugins. This is our own test vault.
-	await page.evaluate(() => {
+	const trusted = await page.evaluate(() => {
 		for (const b of document.querySelectorAll('.modal-container button')) {
-			if (b.textContent?.trim() === 'Trust author and enable plugins') b.click();
+			if (b.textContent?.trim() === 'Trust author and enable plugins') {
+				b.click();
+				return true;
+			}
 		}
+		return false;
 	});
+	// Trusting loads the plugins by itself; reloading while that runs would load styles.css twice.
+	if (trusted) await sleep(2000);
 	await page.evaluate(async (id) => {
 		const plugins = window.app.plugins;
 		if (!plugins.isEnabled()) await plugins.setEnable(true);
