@@ -37,9 +37,14 @@ export function scrollSpeed(y: number, top: number, bottom: number): number {
  * Index of the target whose top is nearest to `y`, or -1 when there is none. `topAt(i)` must not
  * decrease with `i` (line tops in document order). Ties go to the earlier target, and targets that
  * share a top (lines hidden in a fold) count as the first of them.
+ *
+ * When `lastIsEnd` is set, the last target is the end of the note (its top is the note's bottom), and a
+ * `y` below it always picks it: the note's last line can take no height (a line holding only a wrapped
+ * image), and the end would otherwise lose every tie with it.
  */
-export function nearestTarget(count: number, topAt: (i: number) => number, y: number): number {
+export function nearestTarget(count: number, topAt: (i: number) => number, y: number, lastIsEnd = false): number {
 	if (count <= 0) return -1;
+	if (lastIsEnd && y > topAt(count - 1)) return count - 1;
 	let lo = 0;
 	let hi = count - 1;
 	while (lo < hi) {

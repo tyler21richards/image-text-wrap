@@ -10,6 +10,7 @@ import { invertedEffects, isolateHistory } from '@codemirror/commands';
 import {
 	EditorState,
 	StateEffect,
+	type ChangeDesc,
 	type ChangeSpec,
 	type Extension,
 	type Text,
@@ -23,6 +24,18 @@ import { locateAt } from './locate';
 /** Marks our transactions, and the undo/redo transactions that reverse them. */
 const ownGesture = StateEffect.define<null>();
 
+/** A view: the line at `pos` with its top `offset` px below the scroll position (lineBlockAt().top - scrollTop). */
+export interface ViewMark {
+	pos: number;
+	offset: number;
+}
+
+const mapMark = (mark: ViewMark, changes: ChangeDesc): ViewMark => ({ pos: changes.mapPos(mark.pos, 1), offset: mark.offset });
+/** On a move, and on its undo and redo: the view just before it, in the note as it was then (never mapped). */
+const viewBefore = StateEffect.define<ViewMark>();
+/** On the undo or redo of a move: the view to go back to, in the note as it is after it. */
+const viewToRestore = StateEffect.define<ViewMark>({ map: mapMark });
+
 export const USER_EVENT = {
 	layout: 'input.image-text-wrap',
 	move: 'move.image-text-wrap',
@@ -30,13 +43,24 @@ export const USER_EVENT = {
 
 export const CHANGED_ELSEWHERE = 'The note changed while you were working on the image. Nothing was changed. Please try again.';
 
-/** Writes changes as one undo step that never merges with typing, and does not scroll. */
-export function dispatchOwn(view: EditorView, changes: ChangeSpec, userEvent: string): void {
+/** The view as it is now, told by the first line at the top of the editor. */
+function markView(view: EditorView): ViewMark {
+	const block = view.lineBlockAtHeight(Math.max(0, view.scrollDOM.getBoundingClientRect().top - view.documentTop));
+	return { pos: block.from, offset: block.top - view.scrollDOM.scrollTop };
+}
+
+/**
+ * Writes changes as one undo step that never merges with typing, and does not scroll. With `undoView`,
+ * undoing the step brings the view back to how it is now, and redoing it to how it was before the undo.
+ */
+export function dispatchOwn(view: EditorView, changes: ChangeSpec, userEvent: string, { undoView = false } = {}): void {
+	const effects: StateEffect<unknown>[] = [ownGesture.of(null)];
+	if (undoView) effects.push(viewBefore.of(markView(view)));
 	view.dispatch({
 		changes,
 		userEvent,
 		annotations: isolateHistory.of('full'),
-		effects: ownGesture.of(null),
+		effects,
 		scrollIntoView: false,
 	});
 }
@@ -45,14 +69,28 @@ function isOwnHistory(tr: Transaction): boolean {
 	return (tr.isUserEvent('undo') || tr.isUserEvent('redo')) && tr.effects.some((e) => e.is(ownGesture));
 }
 
+/** The view an undo or redo of one of our steps written with `undoView` goes back to, or null. */
+export function viewRestoredBy(tr: Transaction): ViewMark | null {
+	for (const e of tr.effects) if (e.is(viewToRestore)) return e.value;
+	return null;
+}
+
 /**
  * Undo and redo normally scroll to the restored cursor. For our own gestures, keep the viewport where
  * it is instead. A scroll handler would be too late: CodeMirror has already moved its viewport by then.
+ * A move's undo and redo also carry the view to go back to (held by keep-scroll.ts): CodeMirror's snapshot
+ * keeps the line at the top, which can be the moved image's own line, which the undo takes out (24px off).
  */
 export function historyScrollFix(): Extension {
 	const views = new WeakMap<EditorState, EditorView>();
 	return [
-		invertedEffects.of((tr) => (tr.effects.some((e) => e.is(ownGesture)) ? [ownGesture.of(null)] : [])),
+		invertedEffects.of((tr) => {
+			if (!tr.effects.some((e) => e.is(ownGesture))) return [];
+			const out: StateEffect<unknown>[] = [ownGesture.of(null)];
+			// Positions in the note before `tr`, which is the note its reversal leaves.
+			for (const e of tr.effects) if (e.is(viewBefore)) out.push(viewToRestore.of(e.value));
+			return out;
+		}),
 		ViewPlugin.define((view) => {
 			views.set(view.state, view);
 			return {
@@ -64,7 +102,12 @@ export function historyScrollFix(): Extension {
 		EditorState.transactionExtender.of((tr) => {
 			const view = views.get(tr.startState);
 			if (!isOwnHistory(tr) || !view || typeof view.scrollSnapshot !== 'function') return null;
-			return { effects: view.scrollSnapshot().map(tr.changes) };
+			const effects: StateEffect<unknown>[] = [];
+			const snapshot = view.scrollSnapshot().map(tr.changes);
+			if (snapshot) effects.push(snapshot);
+			// For the step that reverses this one (redo after undo, undo after redo).
+			if (viewRestoredBy(tr)) effects.push(viewBefore.of(markView(view)));
+			return { effects };
 		}),
 	];
 }

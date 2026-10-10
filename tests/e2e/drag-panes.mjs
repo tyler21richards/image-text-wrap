@@ -14,6 +14,7 @@ export default async ({ page, setWindowSize, openNote, watchErrors, args }) => {
 	const original = d.fixtureText();
 	const results = [];
 	await setWindowSize(page, 1280, 900);
+	await d.closeViewer(page);
 	await openNote(page, d.FIXTURE, 'live');
 	await d.resetNote(page, null);
 

@@ -41,6 +41,19 @@ export interface MovePlan {
 	changes: TextChange[];
 	/** The note's lines after the move. */
 	lines: string[];
+	/** Index in `lines` of the link's line after the move. */
+	linkLine: number;
+	/**
+	 * Where the link's line starts, told in the note as it is now: at the top of original line `line` (the line
+	 * count stands for the bottom of the note), below `blankLines` new blank lines. Lines the removal takes out
+	 * between there and the target are already allowed for, so the drop indicator can be drawn from this.
+	 */
+	landing: Landing;
+}
+
+export interface Landing {
+	line: number;
+	blankLines: number;
 }
 
 const isBlank = (s: string | undefined): boolean => s !== undefined && s.trim() === '';
@@ -129,27 +142,30 @@ export function canGlueAbove(
 	}
 }
 
-/** Lines to insert at `at` (an index into `rest`, the lines after the removal), and where they go. */
+/**
+ * Lines to insert at `at` (an index into `rest`, the lines after the removal), where they go, and how many
+ * of them (blank lines) come before the link.
+ */
 function planInsertion(
 	rest: readonly string[],
 	at: number,
 	link: string,
 	glue: (index: number) => boolean,
-): { at: number; lines: string[] } {
+): { at: number; lines: string[]; head: number } {
 	const m = rest.length;
 	if (at >= m) {
 		// End of the note: after one blank line, keeping a trailing newline if there is one.
 		let k = m;
 		while (k > 0 && isBlank(rest[k - 1])) k--;
-		if (k === 0) return { at: 0, lines: [link] };
+		if (k === 0) return { at: 0, lines: [link], head: 0 };
 		const trailing = m - k;
-		if (trailing === 0) return { at: m, lines: ['', link] };
-		if (trailing === 1) return { at: k, lines: ['', link] };
-		return { at: k + 1, lines: [link] };
+		if (trailing === 0) return { at: m, lines: ['', link], head: 1 };
+		if (trailing === 1) return { at: k, lines: ['', link], head: 1 };
+		return { at: k + 1, lines: [link], head: 0 };
 	}
 	const head = at === 0 || isBlank(rest[at - 1]) ? [] : [''];
 	const tail = glue(at) ? [] : [''];
-	return { at, lines: [...head, link, ...tail] };
+	return { at, lines: [...head, link, ...tail], head: head.length };
 }
 
 /**
@@ -222,8 +238,15 @@ export function planMove(
 	const glue = (index: number) => req.wrapped && canGlueAbove(lines, infos, beforeRemoval(index, removal), rest[index]);
 	const insertion = planInsertion(rest, at, req.link, glue);
 	const result = [...rest.slice(0, insertion.at), ...insertion.lines, ...rest.slice(insertion.at)];
+	const linkLine = insertion.at + insertion.head;
+	// The inserted lines follow the line before them in `rest`, which is a line of the note as it is now.
+	const landing = {
+		line: insertion.at > 0 ? beforeRemoval(insertion.at - 1, removal) + 1 : 0,
+		blankLines: insertion.head,
+	};
+	const plan = (changes: TextChange[]): MovePlan => ({ changes, lines: result, linkLine, landing });
 
-	if (result.length === lines.length && result.every((l, i) => l === lines[i])) return { changes: [], lines: result };
+	if (result.length === lines.length && result.every((l, i) => l === lines[i])) return plan([]);
 
 	// Line starts in the original text, so lines map to offsets.
 	const starts: number[] = [0];
@@ -236,7 +259,7 @@ export function planMove(
 	const relinked = source.slice(0, req.from) + req.link + source.slice(req.to);
 	if (result.length === lines.length && result.every((l, i) => (i === req.line ? l === relinked : l === lines[i]))) {
 		const from = starts[req.line]! + req.from;
-		return { changes: [{ from, to: starts[req.line]! + req.to, insert: req.link }], lines: result };
+		return plan([{ from, to: starts[req.line]! + req.to, insert: req.link }]);
 	}
 
 	const changes: TextChange[] = [];
@@ -260,6 +283,6 @@ export function planMove(
 	changes.sort((a, b) => a.from - b.from || (a.to - a.from) - (b.to - b.from));
 
 	// The two changes must give exactly the planned text; if an edge case does not, fall back to one change.
-	if (applyChanges(original, changes) !== wanted) return { changes: [diffChange(original, wanted)], lines: result };
-	return { changes, lines: result };
+	if (applyChanges(original, changes) !== wanted) return plan([diffChange(original, wanted)]);
+	return plan(changes);
 }

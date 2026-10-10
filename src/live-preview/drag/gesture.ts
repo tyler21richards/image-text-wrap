@@ -4,7 +4,8 @@
 // second click still opens the viewer, and the resize corner (a different element) is never tracked.
 // Past that, the image is dragged: a ghost follows the pointer, the indicator shows where it will land,
 // and the note scrolls near the editor's edges. The move is planned on the note as it was when the drag
-// started, and written as one transaction on release, only if the note has not changed since.
+// started, and written as one transaction on release, only if the note has not changed since. The view is
+// then held so the image appears where the indicator was, while the text around it settles (keep-scroll.ts).
 //
 // The flow (targets found once from the text, placed on screen through CodeMirror's height map, the
 // rAF auto-scroll loop, the commit) follows Adjustable Media (src/view/blockDrag.ts, src/view/plainDrag.ts),
@@ -18,6 +19,7 @@ import type { LocatedLink } from '../../edit/locate';
 import { relayout, type ImageLink, type Wrap } from '../../grammar';
 import { dropTargets, scanLines, type LineInfo } from '../../markdown/lines';
 import { dropZones, planMove, type MovePlan } from '../../markdown/move';
+import { keepLineAt } from '../keep-scroll';
 import { clamp, nearestTarget, pastThreshold, scrollSpeed, sideAt, type Side } from './geometry';
 import { DragGhost, DropIndicator, type Rect } from './overlay';
 import { swallowNextClick, trackPointer, type TrackedPointer } from './pointer';
@@ -26,6 +28,11 @@ import { swallowNextClick, trackPointer, type TrackedPointer } from './pointer';
 export const BODY_CLASS = 'itw-dragging';
 /** On the dragged image's embed: dimmed while it is moved. */
 export const SOURCE_CLASS = 'itw-drag-source';
+/**
+ * The copy of a wrapped picture that stand-ins.ts draws while the picture's own line is not drawn. Floated
+ * like the picture; `data-from` holds the position of its link.
+ */
+const STAND_IN_FLOAT = '.itw-stand-in-float';
 
 const LABELS: Record<Wrap, string> = {
 	none: 'Move here',
@@ -40,6 +47,8 @@ const MAX_BOX_HEIGHT = 400;
 interface Placement {
 	target: number;
 	plan: MovePlan;
+	/** Where the indicator shows the link's line starting, in document coordinates (like lineBlockAt().top). */
+	landing: number;
 }
 
 export class ImageDrag {
@@ -235,7 +244,9 @@ export class ImageDrag {
 		const y = clamp(this.y, scroller.top, scroller.bottom);
 		// Over code, a table, a quote, a later list item or frontmatter there is nowhere to drop.
 		if (!this.inDropZone(y - documentTop)) return this.clear();
-		const index = nearestTarget(this.targets.length, (i) => this.lineTop(this.targets[i]!, documentTop), y);
+		// The last target is the end of the note when it is the line count (dropTargets).
+		const endLast = this.targets[this.targets.length - 1] === this.lines.length;
+		const index = nearestTarget(this.targets.length, (i) => this.lineTop(this.targets[i]!, documentTop), y, endLast);
 		if (index < 0) return this.clear();
 		const target = this.targets[index]!;
 		const wrap = this.link.layout.wrap;
@@ -243,15 +254,17 @@ export class ImageDrag {
 		const plan = this.plan(target, side);
 		// Dropping where the image already is (on the same side) does nothing, so nothing is shown.
 		if (!plan || plan.changes.length === 0) return this.clear();
-		this.placement = { target, plan };
 
-		const lineTop = this.lineTop(target, documentTop);
-		const top = clamp(lineTop, scroller.top, scroller.bottom);
+		// Where the link's line will start: under the line before it, after any blank line the move adds there.
+		// The view is held there on release (commit), so lines the move takes out above do not shift it.
+		const landing = this.lineTop(plan.landing.line, documentTop) + plan.landing.blankLines * this.view.defaultLineHeight;
+		this.placement = { target, plan, landing: landing - documentTop };
+		const top = clamp(landing, scroller.top, scroller.bottom);
 		const bar = { left: column.left, top, width: column.width };
 		let box: Rect | null = null;
 		if (wrap !== 'none') {
 			// Where CSS will draw it: below earlier floats it has to clear, which can be lower than the line.
-			const boxTop = clamp(this.landingTop(lineTop, target, side ?? 'both'), scroller.top, scroller.bottom);
+			const boxTop = clamp(this.landingTop(landing, target, side ?? 'both'), scroller.top, scroller.bottom);
 			const width = Math.min(this.imageSize.width, column.width);
 			const height = Math.min(this.imageSize.height, MAX_BOX_HEIGHT, Math.max(0, scroller.bottom - boxTop));
 			const left =
@@ -264,28 +277,38 @@ export class ImageDrag {
 	/**
 	 * The top at which a float inserted before `target` will be drawn. A float never starts above an
 	 * earlier float, and a wrapped image clears earlier images on its own side (both sides for top and
-	 * bottom), so it lands below those that reach past the line. Only images drawn on screen are seen.
+	 * bottom), so it lands below those that reach past the line. Only images drawn on screen are seen:
+	 * the real ones, and the stand-in copies of those whose own line is not drawn.
 	 */
 	private landingTop(lineTop: number, target: number, side: Side | 'both'): number {
 		const doc = this.view.state.doc;
 		const at = target < doc.lines ? doc.line(target + 1).from : doc.length;
 		let top = lineTop;
-		for (const el of Array.from(this.view.contentDOM.querySelectorAll<HTMLElement>(EMBED))) {
+		for (const el of Array.from(this.view.contentDOM.querySelectorAll<HTMLElement>(`${EMBED}, ${STAND_IN_FLOAT}`))) {
 			if (el === this.embed) continue; // it leaves its old place
+			const pos = this.floatPos(el);
+			// Its own stand-in copy (once its line is scrolled away) leaves too.
+			if (pos === null || pos === this.link.from || pos >= at) continue;
 			const style = el.win.getComputedStyle(el);
 			if (style.float !== 'left' && style.float !== 'right') continue;
-			let pos: number;
-			try {
-				pos = this.view.posAtDOM(el);
-			} catch {
-				continue;
-			}
-			if (pos >= at) continue;
 			const rect = el.getBoundingClientRect();
 			top = Math.max(top, rect.top - parseFloat(style.marginTop || '0'));
 			if (side === 'both' || style.float === side) top = Math.max(top, rect.bottom + parseFloat(style.marginBottom || '0'));
 		}
 		return top;
+	}
+
+	/** The document position of an image's link: from the editor for a real image, as recorded for a stand-in copy. */
+	private floatPos(el: HTMLElement): number | null {
+		if (el.matches(STAND_IN_FLOAT)) {
+			const pos = Number(el.dataset.from);
+			return el.dataset.from && Number.isInteger(pos) ? pos : null;
+		}
+		try {
+			return this.view.posAtDOM(el);
+		} catch {
+			return null;
+		}
 	}
 
 	/** Whether the line under a document height is one where the nearest block start may be offered. */
@@ -355,7 +378,15 @@ export class ImageDrag {
 			new Notice(CHANGED_ELSEWHERE);
 			return;
 		}
-		dispatchOwn(view, placement.plan.changes, USER_EVENT.move);
+		const { plan, landing } = placement;
+		const offset = landing - view.scrollDOM.scrollTop;
+		// Undo brings back the view from before the drop (write.ts, keep-scroll.ts).
+		dispatchOwn(view, plan.changes, USER_EVENT.move, { undoView: true });
+		// The image appears where the indicator was, and stays there while the text it left re-flows, the
+		// picture loads and stand-ins update: its line is held at that height. On its own, CodeMirror would keep
+		// the line at the top still (or the bottom of the note, when scrolled to the end) and move the image.
+		const doc = view.state.doc;
+		if (plan.linkLine < doc.lines) keepLineAt(view, doc.line(plan.linkLine + 1).from, offset);
 		// A pointer gesture can leave focus on the body; put it back so Undo works at once.
 		view.focus();
 	}
