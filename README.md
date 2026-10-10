@@ -81,11 +81,21 @@ The size stays last, so Obsidian keeps applying it. If you remove the plugin, yo
 
 ## Installing
 
-Until the plugin is in Obsidian's community directory:
+Image Text Wrap is in beta and not yet in Obsidian's community plugin directory. It needs Obsidian 1.13 or later, on desktop.
+
+**With BRAT (easiest, and it keeps the plugin up to date):**
+
+1. In Obsidian, install and turn on the community plugin **BRAT** (Settings → Community plugins → Browse).
+2. Open BRAT's settings, choose **Add beta plugin**, and enter `tyler21richards/image-text-wrap`.
+3. Turn on **Image Text Wrap** in Settings → Community plugins.
+
+**By hand:**
 
 1. Download `main.js`, `manifest.json` and `styles.css` from the [latest release](https://github.com/tyler21richards/image-text-wrap/releases).
-2. Put them in `<your vault>/.obsidian/plugins/image-text-wrap/`.
-3. In Obsidian, open **Settings → Community plugins**, and turn on **Image Text Wrap**.
+2. Put them in a new folder, `<your vault>/.obsidian/plugins/image-text-wrap/`.
+3. Restart Obsidian, then turn on **Image Text Wrap** in Settings → Community plugins.
+
+To try it out, copy `test-vault/Fixture.md`, `test-vault/Plain images.md` and the `test-vault/images` folder from this repository into a vault.
 
 ## Development
 
