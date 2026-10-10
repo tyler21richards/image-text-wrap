@@ -17,7 +17,7 @@
 		"images",
 		"text wrap"
 	],
-	"author": "tyler21richards",
+	"author": "Claude",
 	"license": "MIT",
 	"devDependencies": {
 		"@codemirror/commands": "^6.11.1",
