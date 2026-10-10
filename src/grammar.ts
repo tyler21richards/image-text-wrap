@@ -4,6 +4,9 @@
 //   ![A caption|wrap-block|300](photo.png)
 //
 // Order is: path | free text | layout tokens | size. Unknown segments keep their position.
+//
+// Where Obsidian's two views disagree on what is an image or a token, these functions follow the
+// stricter one, so the plugin never acts on something one view does not draw as a wrapped image.
 
 export type Wrap = 'none' | 'left' | 'right' | 'block';
 export type Gap = 0 | 8 | 16 | 24;
@@ -44,20 +47,41 @@ export function isSizeSegment(s: string): boolean {
 	return SIZE.test(s);
 }
 
+/** True when `s` is exactly a layout token: no spaces around it, lower case, as styles.css matches it. */
 export function isLayoutToken(s: string): boolean {
-	const t = s.trim();
-	return t in WRAP_TOKENS || t in GAP_TOKENS;
+	return s in WRAP_TOKENS || s in GAP_TOKENS;
 }
 
+/** The layout of exact tokens among `segments` (a link's visible segments, or the parts of an alt text). */
 export function layoutFromSegments(segments: readonly string[]): Layout {
 	let wrap: Wrap = 'none';
 	let gap: Gap = DEFAULT_GAP;
-	for (const raw of segments) {
-		const s = raw.trim();
+	for (const s of segments) {
 		if (s in WRAP_TOKENS) wrap = WRAP_TOKENS[s]!;
 		else if (s in GAP_TOKENS) gap = GAP_TOKENS[s]!;
 	}
 	return { wrap, gap };
+}
+
+/**
+ * Each segment as styles.css sees it in the embed's alt text. Obsidian copies the segments into the alt
+ * text without a size at the end, and trims spaces off the start of it, and off its end when no size
+ * follows; styles.css then matches tokens as exact "|"-separated parts. So "| wrap-left|300" is a token,
+ * but "| wrap-left |300" and "A caption | wrap-left" are not: Live Preview keeps those spaces and draws
+ * the image in line (Reading view trims the space before a size, the one case where the views differ).
+ */
+function visibleSegments(segments: readonly string[]): string[] {
+	const sized = segments.length > 0 && isSizeSegment(segments[segments.length - 1]!);
+	const trimEnd = sized ? -1 : segments.length - 1;
+	return segments.map((s, i) => {
+		const start = i === 0 ? s.trimStart() : s;
+		return i === trimEnd ? start.trimEnd() : start;
+	});
+}
+
+/** The layout a link's segments give its image. */
+function layoutOfLink(segments: readonly string[]): Layout {
+	return layoutFromSegments(visibleSegments(segments));
 }
 
 export function tokensFor(layout: Layout): string[] {
@@ -118,28 +142,31 @@ function parseWiki(text: string, pos: number, inTable: boolean): ImageLink | nul
 		target,
 		segments,
 		separator,
-		layout: layoutFromSegments(segments),
+		layout: layoutOfLink(segments),
 	};
+}
+
+/**
+ * Where the alt text of a markdown image that starts at `pos` ends (the index of its "]"), or -1 when
+ * Obsidian does not draw an image there. Live Preview ends the alt text at the first "]", escaped or
+ * not, and Reading view needs every "[" in it escaped (an unescaped one would need a matching "]").
+ */
+function altEnd(text: string, pos: number, stop: number): number {
+	for (let i = pos + 2; i < stop; i++) {
+		const c = text[i];
+		if (c === '\\') {
+			if (text[i + 1] === ']') return -1;
+			i++;
+		} else if (c === '[') return -1;
+		else if (c === ']') return i;
+	}
+	return -1;
 }
 
 function parseMarkdown(text: string, pos: number, inTable: boolean): ImageLink | null {
 	const stop = lineEnd(text, pos);
-	// Alt text: up to the matching "]", allowing nested brackets and escapes.
-	let depth = 0;
-	let i = pos + 2;
-	for (; i < stop; i++) {
-		const c = text[i];
-		if (c === '\\') {
-			i++;
-			continue;
-		}
-		if (c === '[') depth++;
-		else if (c === ']') {
-			if (depth === 0) break;
-			depth--;
-		}
-	}
-	if (i >= stop || text[i + 1] !== '(') return null;
+	const i = altEnd(text, pos, stop);
+	if (i === -1 || text[i + 1] !== '(') return null;
 	const alt = text.slice(pos + 2, i);
 	// Destination: "<...>" or a run without unbalanced ")" or whitespace, then an optional title.
 	let j = i + 2;
@@ -178,7 +205,7 @@ function parseMarkdown(text: string, pos: number, inTable: boolean): ImageLink |
 		target,
 		segments,
 		separator,
-		layout: layoutFromSegments(segments),
+		layout: layoutOfLink(segments),
 	};
 }
 
@@ -198,18 +225,19 @@ function findClosingParen(text: string, from: number, stop: number): number {
 /** Returns the segments with layout tokens replaced, keeping every other segment where it was. */
 export function withLayout(segments: readonly string[], layout: Layout): string[] {
 	const tokens = tokensFor(layout);
+	const visible = visibleSegments(segments);
 	const out: string[] = [];
 	let placed = false;
-	for (const s of segments) {
-		if (isLayoutToken(s)) {
+	segments.forEach((s, i) => {
+		if (isLayoutToken(visible[i]!)) {
 			if (!placed) {
 				out.push(...tokens);
 				placed = true;
 			}
-			continue;
+			return;
 		}
 		out.push(s);
-	}
+	});
 	if (!placed && tokens.length) {
 		// Before a trailing size, otherwise at the end.
 		const last = out.length - 1;
@@ -227,25 +255,8 @@ export function serializeLink(text: string, link: ImageLink, segments: readonly 
 		return `![[${link.target}${segments.length ? link.separator + body : ''}]]`;
 	}
 	// Keep the destination and title exactly as written.
-	const altEnd = findAltEnd(raw);
-	return `![${body}${raw.slice(altEnd)}`;
-}
-
-function findAltEnd(raw: string): number {
-	let depth = 0;
-	for (let i = 2; i < raw.length; i++) {
-		const c = raw[i];
-		if (c === '\\') {
-			i++;
-			continue;
-		}
-		if (c === '[') depth++;
-		else if (c === ']') {
-			if (depth === 0) return i;
-			depth--;
-		}
-	}
-	return raw.length;
+	const end = altEnd(raw, 0, raw.length);
+	return `![${body}${raw.slice(end === -1 ? raw.length : end)}`;
 }
 
 /** The text of the link with its layout set. */
@@ -261,26 +272,97 @@ export function looksLikeImage(target: string): boolean {
 	return IMAGE_EXT.test(clean) || /^data:image\//i.test(target) || /^https?:\/\//i.test(target);
 }
 
+/** End (exclusive) of the code span whose backtick run starts at `i`. */
+function codeSpanEnd(line: string, i: number): number {
+	let n = 0;
+	while (line[i + n] === '`') n++;
+	for (let j = line.indexOf('`', i + n); j !== -1; ) {
+		let m = 0;
+		while (line[j + m] === '`') m++;
+		if (m === n) return j + m;
+		j = line.indexOf('`', j + m);
+	}
+	// Not closed on this line: Live Preview shows the rest of the line as code (Reading view as text).
+	return line.length;
+}
+
+const SPACE = /\s/;
+const DIGIT = /\d/;
+
+/** End (exclusive) of the inline math that starts with the "$" at `i`, or -1 when that "$" is plain text. */
+function mathEnd(line: string, i: number): number {
+	if (line[i + 1] === '$') {
+		// Not closed on this line: Live Preview starts a block of math there (Reading view shows text).
+		const close = line.indexOf('$$', i + 2);
+		return close === -1 ? line.length : close + 2;
+	}
+	// "$x$": no space after the opening "$" or before the closing one, and no digit after the closing one.
+	const first = line[i + 1];
+	if (first === undefined || SPACE.test(first)) return -1;
+	for (let k = line.indexOf('$', i + 2); k !== -1; k = line.indexOf('$', k + 1)) {
+		const before = line[k - 1]!;
+		if (SPACE.test(before) || before === '\\' || DIGIT.test(line[k + 1] ?? '')) continue;
+		return k + 1;
+	}
+	return -1;
+}
+
 /**
- * Finds every image link on a line of text (offsets relative to the line).
- * Used to recognise lines that hold nothing but one wrapped image.
+ * End (exclusive) of inline code, inline math or a one-line comment that starts at `i`, or -1.
+ * Obsidian draws no image inside these: an image link there is text (Live Preview draws one inside
+ * %%…%%, but the comment is hidden everywhere else).
+ */
+function literalSpanEnd(line: string, i: number): number {
+	const c = line[i];
+	if (c === '`') return codeSpanEnd(line, i);
+	if (c === '$') return mathEnd(line, i);
+	if (c === '%' && line[i + 1] === '%') {
+		const close = line.indexOf('%%', i + 2);
+		return close === -1 ? -1 : close + 2;
+	}
+	if (c === '<' && line.startsWith('<!--', i)) {
+		const close = line.indexOf('-->', i + 4);
+		return close === -1 ? line.length : close + 3;
+	}
+	return -1;
+}
+
+const SPECIAL = /[\\`$%<!]/g;
+
+/**
+ * Finds every image link on a line of text (offsets relative to the line), reading it from left to
+ * right as Obsidian does: a backslash escapes the next character, and links inside inline code, inline
+ * math and one-line comments are not images. Every part of the plugin that looks for links in text
+ * goes through this.
  */
 export function findImageLinks(line: string, inTable = false): ImageLink[] {
 	const out: ImageLink[] = [];
 	let i = 0;
-	while ((i = line.indexOf('![', i)) !== -1) {
-		if (i > 0 && line[i - 1] === '\\') {
+	while (i < line.length) {
+		SPECIAL.lastIndex = i;
+		const found = SPECIAL.exec(line);
+		if (!found) break;
+		i = found.index;
+		if (line[i] === '\\') {
 			i += 2;
 			continue;
 		}
-		const link = parseImageLinkAt(line, i, inTable);
+		const end = literalSpanEnd(line, i);
+		if (end !== -1) {
+			i = end;
+			continue;
+		}
+		const link = line[i] === '!' ? parseImageLinkAt(line, i, inTable) : null;
 		if (link) {
 			out.push(link);
 			i = link.to;
-		} else i += 2;
+		} else i++;
 	}
 	return out;
 }
 
-/** True when a token could be one of ours: any wrap-* or gap-* segment, for cheap note-level checks. */
-export const ANY_LAYOUT_TOKEN = /[|[]\s*wrap-(left|right|block)\s*[|\]]/;
+/**
+ * True when a line could hold one of our wrap tokens, for cheap note-level checks. It also matches
+ * segments with spaces that are not tokens (see visibleSegments); findImageLinks gives the exact answer.
+ */
+export const ANY_LAYOUT_TOKEN = /[|[][ \t]*wrap-(?:left|right|block)[ \t]*[|\]]/;
