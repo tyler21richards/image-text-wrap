@@ -279,4 +279,57 @@ p > img:is([alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt
 .markdown-preview-pusher + .itw-host > .itw-stand-in,
 .markdown-preview-pusher + .itw-host-skip + .itw-host > .itw-stand-in {
 	display: block;
+
+/* ---------- Toolbar ---------- */
+
+/*
+ * One picture toolbar per window, placed by the plugin just above (or below) the selected image.
+ * Hidden with visibility rather than display so it can always be measured before it is placed.
+ */
+.itw-toolbar {
+	position: fixed;
+	top: 0;
+	left: 0;
+	z-index: var(--layer-popover);
+	display: flex;
+	align-items: center;
+	gap: var(--size-2-1);
+	padding: var(--size-2-2);
+	background-color: var(--background-primary);
+	border: var(--border-width) solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	box-shadow: var(--shadow-s);
+	user-select: none;
+}
+
+.itw-toolbar.itw-toolbar-hidden {
+	visibility: hidden;
+	pointer-events: none;
+}
+
+.itw-toolbar-separator {
+	align-self: stretch;
+	width: var(--border-width);
+	margin: var(--size-2-2) var(--size-2-1);
+	background-color: var(--background-modifier-border);
+}
+
+/* Pressed: the current layout, like Word's highlighted layout option. */
+.itw-toolbar .itw-toolbar-button.is-active,
+.itw-toolbar .itw-toolbar-button.is-active:hover {
+	background-color: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+.itw-toolbar .itw-toolbar-button.has-active-menu {
+	background-color: var(--background-modifier-hover);
+	color: var(--icon-color-hover);
+}
+
+/* Spacing while the picture is in line: shown faint, still hoverable so its tooltip can explain why. */
+.itw-toolbar .itw-toolbar-button.is-disabled,
+.itw-toolbar .itw-toolbar-button.is-disabled:hover {
+	background-color: transparent;
+	color: var(--text-faint);
+	cursor: default;
 }

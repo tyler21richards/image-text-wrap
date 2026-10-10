@@ -88,3 +88,60 @@ export function isPrintRoot(el: HTMLElement): boolean {
  * which they are from the start, before Obsidian adds .image-embed), and remote images (a bare img).
  */
 export const READING_IMAGES = '.internal-embed[alt], p > img[alt]';
+
+// ---------- Toolbar, menu and commands (appended) ----------
+//
+// Remote and data-URI images in Live Preview: div.image-embed.is-selected (no .internal-embed, no alt,
+// no src) > div.image-wrapper > img[alt], with the same native controls; Obsidian selects them on click
+// like local images, and posAtDOM(embed) is the start of their link (checked on 1.14.4).
+// Esc does not deselect an image. A selected image's native controls (1.14.4, 320px wide image):
+// .embed-actions 62x28 at 8px from the top-right corner, .image-resize-corner 30x30 at the bottom right.
+// Right-click in Live Preview: file-menu with source "link-context-menu"; Obsidian's own image items are
+// in the menu section "image" (Copy image, Swap file, Remove image, Reset size).
+// Reading view on 1.14.4: a right-click (and a left click) on an image opens Obsidian's lightbox
+// (body > .lightbox) on press, and no file-menu event fires.
+
+/** Any image Live Preview draws: local (EMBED) and remote or data-URI images. */
+export const ANY_IMAGE_EMBED = '.image-embed';
+
+/** Like editableEmbedFrom, but also accepts remote and data-URI images. */
+export function editableImageFrom(target: EventTarget | null): HTMLElement | null {
+	if (!isElement(target)) return null;
+	const embed = target.closest<HTMLElement>(ANY_IMAGE_EMBED);
+	if (!embed || !embed.closest('.cm-content')) return null;
+	if (embed.parentElement?.closest(TRANSCLUSION)) return null;
+	if (embed.closest(UNSUPPORTED_LP_CONTAINERS)) return null;
+	return embed;
+}
+
+/** The image Obsidian has selected in this editor (local or remote), if this plugin may act on it. */
+export function selectedImage(view: EditorView): HTMLElement | null {
+	const el = view.contentDOM.querySelector<HTMLElement>(`${ANY_IMAGE_EMBED}.${SELECTED_CLASS}`);
+	return el && editableImageFrom(el) ? el : null;
+}
+
+/** The picture element of an embed, for measuring. */
+export function pictureOf(embed: HTMLElement): HTMLElement {
+	return embed.querySelector<HTMLElement>('img') ?? embed;
+}
+
+/** Reading view: the image a right-click landed on (local embed or a bare remote img), outside transclusions. */
+export function readingImageFrom(target: EventTarget | null): HTMLElement | null {
+	if (!isElement(target) || !target.closest('.markdown-reading-view') || target.closest('.cm-content')) return null;
+	const embed = target.closest<HTMLElement>(EMBED);
+	const image = embed ?? (target.instanceOf(HTMLImageElement) ? target : null);
+	if (!image || image.parentElement?.closest(TRANSCLUSION)) return null;
+	return image;
+}
+
+/** Reading view: every image a section draws, in order (local embeds and bare remote imgs), outside transclusions. */
+export function drawnImages(section: HTMLElement): HTMLElement[] {
+	return Array.from(section.querySelectorAll<HTMLElement>(`${EMBED}, img`)).filter(
+		(el) => !el.parentElement?.closest(`${TRANSCLUSION}, .internal-embed`),
+	);
+}
+
+/** The text an image was drawn from: the embed's src for local images, the img's src for remote ones. */
+export function drawnTarget(image: HTMLElement): string | null {
+	return image.getAttribute('src');
+}

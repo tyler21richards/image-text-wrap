@@ -1,7 +1,7 @@
 import { Plugin } from 'obsidian';
 import { historyScrollFix } from './edit/write';
 import { lineClassField } from './live-preview/line-classes';
-import { toolbarExtension, destroyToolbars } from './live-preview/toolbar';
+import { toolbarExtension, destroyToolbars, refreshToolbars } from './live-preview/toolbar';
 import { dragExtension } from './live-preview/drag';
 import { standInExtension } from './live-preview/stand-ins';
 import { registerReadingView } from './reading';
@@ -41,5 +41,6 @@ export default class ImageTextWrapPlugin extends Plugin {
 		this.settings = next;
 		await this.saveData(next);
 		applyCssVariables(this);
+		refreshToolbars();
 	}
 }
