@@ -458,6 +458,8 @@ export default async ({ page, openNote, setNote, setWindowSize, watchErrors, arg
 		}
 		result.passes.jumpFresh = fresh;
 		// Through CodeMirror's own scrollIntoView, as jump-to-line does, to a line beside the picture's bottom.
+		// The target line must end up at the window's top (within a few px, as with the plugin off): the
+		// stand-in that follows the jump re-wraps the text above it (src/live-preview/stand-ins.ts, noteScroll).
 		const viaEffect = [];
 		phase = 'jumpViaScrollIntoView';
 		for (const img of calibration) {
@@ -468,13 +470,17 @@ export default async ({ page, openNote, setNote, setWindowSize, watchErrors, arg
 				v.scrollDOM.scrollTop = 0;
 				await __lp.settle(300);
 				const target = v.lineBlockAtHeight(v.lineBlockAt(imgFrom).top + c.layoutTop + c.h * 0.9);
+				const targetTop = () => {
+					const el = __lp.lineEl(v, target.from);
+					return el ? Math.round(el.getBoundingClientRect().top - v.scrollDOM.getBoundingClientRect().top) : null;
+				};
 				v.dispatch({ effects: v.constructor.scrollIntoView(target.from, { y: 'start' }) });
 				await __lp.frames(2);
 				await __lp.sleep(30);
 				const atJump = __lp.imageStatus().filter((i) => i.n === c.n);
 				await __lp.settle(500);
 				const settled = __lp.imageStatus().filter((i) => i.n === c.n);
-				return { atJump, settled };
+				return { atJump, settled, target: v.state.doc.lineAt(target.from).number, targetTop: targetTop() };
 			}, img.from);
 			viaEffect.push({ image: img.n, from: 'scrollIntoView', frac: 0.9, ...r });
 		}
@@ -496,7 +502,8 @@ export default async ({ page, openNote, setNote, setWindowSize, watchErrors, arg
 				const at = (j.atJump ?? []).map((i) => `${i.drawn ? 'drawn' : i.standIn ? 'stand-in' : 'UNDRAWN'} lost:${i.intrudeVisible}`).join(',') || 'not reaching';
 				const settled = (j.settled ?? []).map((i) => `${i.drawn ? 'drawn' : i.standIn ? 'stand-in' : 'UNDRAWN'} lost:${i.intrudeVisible}`).join(',');
 				const after = j.after ? ` | then 30 steps: jumps ${j.after.jumps} max ${j.after.maxJump}px, lost-wrap steps ${j.after.lostWrapSteps}` : '';
-				lines.push(`${name} L${j.image} ${j.from} ${j.frac}: at jump ${at}; settled ${settled}${after}`);
+				const target = j.target ? ` | target L${j.target} at ${j.targetTop}px from the top` : '';
+				lines.push(`${name} L${j.image} ${j.from} ${j.frac}: at jump ${at}; settled ${settled}${after}${target}`);
 			}
 		} else {
 			lines.push(

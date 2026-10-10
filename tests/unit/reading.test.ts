@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { embedHasFloat, keepWithNext, textHasFloat, wrapFromAlt } from '../../src/reading/wraps.ts';
-import { planHost, reachedHosts, type FloatBox } from '../../src/reading/stand-in-plan.ts';
+import { floatFrom, moveFloat, planHost, reachedHosts, type FloatBox } from '../../src/reading/stand-in-plan.ts';
 
 test('a note has a float only for wrap-left or wrap-right images in body text', () => {
 	assert.equal(textHasFloat('# Title\n\n![[a.png|wrap-left|300]]\nText'), true);
@@ -93,4 +93,19 @@ test('same-side stand-ins stack; the other side starts at the host top', () => {
 	// Stand-ins already in the host for earlier images push new same-side ones down.
 	const after = planHost(100, [{ index: 0, box: right(150, 400) }], { right: 300 });
 	assert.deepEqual(after.map((p) => [p.marginTop, p.height]), [[0, 250]]);
+});
+
+test('a float moved against its hosts, as when its section is re-rendered off the page', () => {
+	const box = { ...right(-100, 400), imgTop: -100 };
+	// In the coordinates of a host that starts at 200.
+	assert.deepEqual(floatFrom(box, 200), { ...box, top: -300, bottom: 200, imgTop: -300 });
+	// Its section grew by 24px: everything after it moved down, so against its hosts it moved up.
+	assert.deepEqual(moveFloat(box, 24), { ...box, top: -124, bottom: 376, imgTop: -124 });
+	// Planned again in that host (top 0 in host coordinates), the stand-in is 24px shorter.
+	const plan = (b: FloatBox) => planHost(0, [{ index: 0, box: b }]).map((p) => [p.height, p.offset]);
+	assert.deepEqual(plan(floatFrom(box, 200)), [[200, 300]]);
+	assert.deepEqual(plan(moveFloat(floatFrom(box, 200), 24)), [[176, 324]]);
+	// 48px shorter: it reaches 48px further into the host. 200px taller: it no longer reaches it.
+	assert.deepEqual(plan(moveFloat(floatFrom(box, 200), -48)), [[248, 252]]);
+	assert.deepEqual(plan(moveFloat(floatFrom(box, 200), 200)), []);
 });

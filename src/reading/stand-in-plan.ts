@@ -87,6 +87,16 @@ export function planHost(
 	return out;
 }
 
+/** A float moved up by `delta` against the sections after it (down when negative). */
+export function moveFloat(box: FloatBox, delta: number): FloatBox {
+	return { ...box, top: box.top - delta, bottom: box.bottom - delta, imgTop: box.imgTop - delta };
+}
+
+/** A float in coordinates that start at `origin` (a host's top). */
+export function floatFrom(box: FloatBox, origin: number): FloatBox {
+	return moveFloat(box, origin);
+}
+
 function round(n: number): number {
 	return Math.round(n * 100) / 100;
 }

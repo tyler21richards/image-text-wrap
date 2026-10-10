@@ -1,8 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { ChangeSet, Text } from '@codemirror/state';
 import {
+	docAnchors,
+	editKeepsAnchors,
 	estimateBox,
 	findFloatAnchors,
+	moveAnchors,
+	type DocAnchor,
 	linkSize,
 	parseSize,
 	planStandIn,
@@ -144,4 +149,125 @@ test('boxes equal to the half pixel', () => {
 	assert.ok(!sameBox(box(), box({ refPos: 3, refOffset: 0 })));
 	assert.ok(sameBox(undefined, undefined));
 	assert.ok(!sameBox(box(), undefined));
+});
+
+const edited = (lines: string[], above?: string, below?: string) => ({ lines, above, below });
+
+test('an edit keeps the anchors when it only touches ordinary text', () => {
+	// Typing inside a paragraph between blank lines.
+	assert.ok(editKeepsAnchors(edited(['Some text'], '', ''), edited(['Some texts'], '', ''), false));
+	// Inside a block of text lines with no blank line around.
+	assert.ok(editKeepsAnchors(edited(['two'], 'one', 'three'), edited(['two and more'], 'one', 'three'), false));
+	// Splitting a paragraph in two with a blank line, between blank lines.
+	assert.ok(editKeepsAnchors(edited(['One. Two.'], '', ''), edited(['One.', '', 'Two.'], '', ''), false));
+	// Typing in the text glued under a wrapped image: the image's line is not edited.
+	assert.ok(editKeepsAnchors(edited(['Beside it.'], '![[a.png|wrap-left]]', ''), edited(['Beside it, more.'], '![[a.png|wrap-left]]', ''), false));
+	// A paragraph turned into a heading between blank lines ends no table that was not ended already.
+	assert.ok(editKeepsAnchors(edited(['Text'], '', ''), edited(['# Text'], '', ''), false));
+});
+
+test('an edit of a wrap, a pipe, a delimiter row, a fence or frontmatter scans the note again', () => {
+	for (const line of ['![[a.png|wrap-left]]', 'a | b', '```', '~~~ js', '$$', '%%', '<!--', '-->', '---', '...', '-', ':--:', 'WRAP-RIGHT']) {
+		assert.ok(!editKeepsAnchors(edited(['text'], '', ''), edited([line], '', ''), false), line);
+		assert.ok(!editKeepsAnchors(edited([line], '', ''), edited(['text'], '', ''), false), line);
+	}
+	// The note's first line may start frontmatter.
+	assert.ok(!editKeepsAnchors(edited(['text'], undefined, ''), edited(['texts'], undefined, ''), true));
+});
+
+test('an edit that may end a table, or stop ending one, scans the note again', () => {
+	// A blank line appears in a block of text (it would end a table above it).
+	assert.ok(!editKeepsAnchors(edited(['two'], 'one', 'three'), edited(['', 'two'], 'one', 'three'), false));
+	// A heading, quote or list item appears, or one goes.
+	assert.ok(!editKeepsAnchors(edited(['two'], 'one', 'three'), edited(['# two'], 'one', 'three'), false));
+	assert.ok(!editKeepsAnchors(edited(['> two'], 'one', 'three'), edited(['two'], 'one', 'three'), false));
+	assert.ok(!editKeepsAnchors(edited(['two'], 'one', 'three'), edited(['- two'], 'one', 'three'), false));
+});
+
+const doc = (lines: string[]) => Text.of(lines);
+const fields = (anchors: readonly DocAnchor[]) => anchors.map((a) => [a.line, a.lineFrom, a.lineTo, a.pos, a.raw, a.side, a.gap]);
+
+test('anchors move with an edit in ordinary text and are found again otherwise', () => {
+	const before = doc(['# Title', '', 'Intro text.', '', '![[a.png|wrap-left|300]]', 'Beside it.', '', 'More text.', '', '![b|wrap-right](b.png)', 'End.']);
+	const anchors = docAnchors(before);
+	assert.deepEqual(anchors.map((a) => a.line), [4, 9]);
+	// Typing two words into "Intro text."
+	const at = before.line(3).from + 5;
+	const typing = ChangeSet.of({ from: at, insert: ' more words' }, before.length);
+	const after = typing.apply(before);
+	const moved = moveAnchors(anchors, before, typing, after)!;
+	assert.ok(moved);
+	assert.deepEqual(fields(moved), fields(docAnchors(after)));
+	// Opening a code fence above the anchors changes them: no shortcut.
+	const fence = ChangeSet.of({ from: at, insert: '\n```\n' }, before.length);
+	assert.equal(moveAnchors(anchors, before, fence, fence.apply(before)), null);
+	// Typing in the text glued under a picture keeps it.
+	const glued = ChangeSet.of({ from: before.line(6).from, insert: 'Right ' }, before.length);
+	const gluedAfter = glued.apply(before);
+	assert.deepEqual(fields(moveAnchors(anchors, before, glued, gluedAfter)!), fields(docAnchors(gluedAfter)));
+	// A delimiter row under a picture's line would make it a table's header: no shortcut.
+	const row = ChangeSet.of({ from: before.line(6).from, to: before.line(6).to, insert: ':--' }, before.length);
+	assert.equal(moveAnchors(anchors, before, row, row.apply(before)), null);
+});
+
+test('whenever anchors are moved rather than found again, they are what a new scan finds', () => {
+	const base = [
+		'---',
+		'title: x',
+		'---',
+		'# Heading',
+		'',
+		'Text before.',
+		'',
+		'![[a.png|wrap-left|300]]',
+		'Text beside the first picture.',
+		'',
+		'| h | i |',
+		'|---|---|',
+		'| 1 | 2 |',
+		'Row text',
+		'![[b.png|wrap-right]]',
+		'',
+		'```',
+		'![[c.png|wrap-left]]',
+		'```',
+		'',
+		'- item',
+		'![[d.png|wrap-right|200]]',
+		'',
+		'> quote',
+		'',
+		'Plain paragraph one.',
+		'Plain paragraph two.',
+		'',
+		...Array.from({ length: 12 }, (_, i) => [`Filler paragraph ${i + 1}, with a few ordinary words in it.`, '']).flat(),
+		'$$',
+		'x',
+		'$$',
+		'![e|wrap-left|120](e.png)',
+		'Last words.',
+	];
+	const snippets = ['x', ' ', 'word ', '\n', '\n\n', '|', '```', '$$', '# ', '- ', '> ', '---', '1. ', '%%', 'wrap-left', '![[f.png|wrap-left]]', '\t'];
+	let seed = 7;
+	const random = (n: number) => {
+		seed = (seed * 1103515245 + 12345) % 2147483648;
+		return seed % n;
+	};
+	let moved = 0;
+	for (let round = 0; round < 3000; round++) {
+		const before = doc(base);
+		const anchors = docAnchors(before);
+		const from = random(before.length + 1);
+		const del = random(4) === 0 ? Math.min(before.length - from, random(12)) : 0;
+		const insert = random(3) === 0 ? '' : snippets[random(snippets.length)]!;
+		if (!del && !insert) continue;
+		const changes = ChangeSet.of({ from, to: from + del, insert }, before.length);
+		const after = changes.apply(before);
+		const result = moveAnchors(anchors, before, changes, after);
+		if (!result) continue;
+		moved++;
+		assert.deepEqual(fields(result), fields(docAnchors(after)), `round ${round}: ${JSON.stringify({ from, del, insert })}`);
+	}
+	// Ordinary typing takes the shortcut.
+	assert.ok(moved > 1000, `moved ${moved}`);
 });
