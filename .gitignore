@@ -1,0 +1,8 @@
+node_modules/
+main.js
+*.map
+.DS_Store
+test-vault/.obsidian/workspace*.json
+test-vault/.obsidian/plugins/image-text-wrap/
+test-artifacts/
+.e2e/

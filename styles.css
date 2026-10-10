@@ -1,0 +1,155 @@
+/*
+ * Image Text Wrap
+ *
+ * Rendering is CSS only. Layout lives in the image link (![[photo.png|wrap-left|gap-24|300]]), and
+ * Obsidian copies the text between the path and the size into the embed's alt attribute, so the
+ * same rules drive Reading view and PDF export. In Live Preview the plugin also tags each line that
+ * holds a wrapped image (.itw-image-line-*), which covers remote images, whose alt sits on the inner img.
+ *
+ * Tokens are matched exactly inside the pipe-separated alt: "x", "x|…", "…|x|…" or "…|x".
+ * Classes the plugin adds:
+ *   .itw-has-wrap      on .cm-editor, when the note has any wrapped image (Live Preview fixes)
+ *   .itw-image-line-*  on the .cm-line that holds nothing but one wrapped image
+ *   .itw-gap-*         on that line, for its spacing
+ *   .itw-wrap-note     on Reading view sections and the PDF root of notes with wrapped images
+ */
+
+/* ---------- Spacing ---------- */
+
+.image-embed:is([alt="gap-0"], [alt^="gap-0|"], [alt*="|gap-0|"], [alt$="|gap-0"]),
+img:is([alt="gap-0"], [alt^="gap-0|"], [alt*="|gap-0|"], [alt$="|gap-0"]),
+.itw-gap-0 {
+	--itw-gap: 0px;
+}
+.image-embed:is([alt="gap-8"], [alt^="gap-8|"], [alt*="|gap-8|"], [alt$="|gap-8"]),
+img:is([alt="gap-8"], [alt^="gap-8|"], [alt*="|gap-8|"], [alt$="|gap-8"]),
+.itw-gap-8 {
+	--itw-gap: 8px;
+}
+.image-embed:is([alt="gap-16"], [alt^="gap-16|"], [alt*="|gap-16|"], [alt$="|gap-16"]),
+img:is([alt="gap-16"], [alt^="gap-16|"], [alt*="|gap-16|"], [alt$="|gap-16"]),
+.itw-gap-16 {
+	--itw-gap: 16px;
+}
+.image-embed:is([alt="gap-24"], [alt^="gap-24|"], [alt*="|gap-24|"], [alt$="|gap-24"]),
+img:is([alt="gap-24"], [alt^="gap-24|"], [alt*="|gap-24|"], [alt$="|gap-24"]),
+.itw-gap-24 {
+	--itw-gap: 24px;
+}
+
+/* ---------- Wrap left and right ---------- */
+
+/*
+ * The float is positioned and raised, because editor lines are position: relative and would otherwise
+ * paint over it and take its clicks. Same-side images stack instead of sitting side by side.
+ */
+.image-embed:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="|wrap-left"]),
+.image-embed:is([alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt$="|wrap-right"]),
+p > img:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="|wrap-left"]),
+p > img:is([alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt$="|wrap-right"]),
+.itw-image-line-left > .image-embed,
+.itw-image-line-right > .image-embed {
+	display: block;
+	width: fit-content;
+	max-width: var(--itw-max-width, 50%);
+	position: relative;
+	z-index: 1;
+	margin-top: 0;
+	margin-bottom: 0.5em;
+}
+
+.image-embed:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="|wrap-left"]),
+p > img:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="|wrap-left"]),
+.itw-image-line-left > .image-embed {
+	float: left;
+	clear: left;
+	margin-left: 0;
+	margin-right: var(--itw-gap, 16px);
+}
+
+.image-embed:is([alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt$="|wrap-right"]),
+p > img:is([alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt$="|wrap-right"]),
+.itw-image-line-right > .image-embed {
+	float: right;
+	clear: right;
+	margin-right: 0;
+	margin-left: var(--itw-gap, 16px);
+}
+
+/* The picture scales down with its box rather than overflowing it. The stored size is unchanged. */
+.image-embed:is([alt*="wrap-left"], [alt*="wrap-right"]) img,
+.itw-image-line-left > .image-embed img,
+.itw-image-line-right > .image-embed img,
+p > img:is([alt*="wrap-left"], [alt*="wrap-right"]) {
+	max-width: 100%;
+	height: auto;
+}
+
+/* ---------- Top and bottom ---------- */
+
+/* Spacing sits in padding, not margin: CodeMirror measures boxes, so a margin would shift every later line. */
+.image-embed:is([alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt$="|wrap-block"]),
+p > img:is([alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt$="|wrap-block"]),
+.itw-image-line-block > .image-embed {
+	display: block;
+	width: fit-content;
+	max-width: 100%;
+	margin-inline: auto;
+	margin-block: 0;
+	padding-block: calc(var(--itw-gap, 16px) / 2);
+	clear: both;
+}
+
+/* ---------- The image's own line in Live Preview ---------- */
+
+/*
+ * A line that holds only a wrapped image takes no height of its own, so the float's top meets the
+ * first line of text beside it (and a top-and-bottom image is spaced only by its padding).
+ */
+.itw-has-wrap .cm-content > .cm-line:is(.itw-image-line-left, .itw-image-line-right, .itw-image-line-block) {
+	font-size: 0;
+	line-height: 0;
+	padding-block: 0;
+}
+
+/* ---------- Text beside a float, Live Preview ---------- */
+
+/* Headings, code, rules and footnotes clear floats by default; that leaves a gap CodeMirror cannot see. */
+.itw-has-wrap .cm-content > .cm-line {
+	clear: none;
+}
+
+/*
+ * Lines with a hanging indent (lists, quotes) measure it at render time; beside a float that would
+ * include the image width. As their own formatting context they sit beside the image as a whole box.
+ */
+.itw-has-wrap .cm-content > .cm-line:is(.HyperMD-list-line, .HyperMD-quote, .HyperMD-hr, .HyperMD-codeblock, [style*="text-indent"]) {
+	display: flow-root;
+}
+
+/* ---------- Reading view: the line break after an image glued above its text ---------- */
+
+.image-embed:is([alt*="wrap-left"], [alt*="wrap-right"], [alt*="wrap-block"]) + br,
+p > img:is([alt*="wrap-left"], [alt*="wrap-right"], [alt*="wrap-block"]) + br {
+	display: none;
+}
+
+/* ---------- Text beside a float, Reading view and PDF ---------- */
+
+/* Quote bars, callout backgrounds, rules and display math would be covered; nested lists lose their indent. */
+.itw-wrap-note :is(ul, ol, blockquote, .callout, hr, .math-block) {
+	display: flow-root;
+}
+
+/* ---------- Print and PDF ---------- */
+
+@media print {
+	.image-embed:is([alt*="wrap-left"], [alt*="wrap-right"], [alt*="wrap-block"]),
+	p > img:is([alt*="wrap-left"], [alt*="wrap-right"], [alt*="wrap-block"]),
+	.itw-print-float {
+		break-inside: avoid;
+	}
+	.itw-print-keep-with-next {
+		break-after: avoid;
+	}
+}
