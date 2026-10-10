@@ -2,6 +2,10 @@
 //   node scripts/obsidian.mjs run tests/e2e/toolbar-menu.mjs
 // Real right-clicks need Obsidian's DOM menus, so this switches the test vault to non-native menus
 // (macOS defaults to native ones, which the DevTools protocol cannot click) and puts the setting back after.
+import { readFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
 	clickMenuItem,
 	clickText,
@@ -18,6 +22,64 @@ import {
 
 const OURS = ['In line with text', 'Wrap text left', 'Wrap text right', 'Top and bottom'];
 const SPACING = ['Spacing: None', 'Spacing: Small (8 px)', 'Spacing: Medium (16 px)', 'Spacing: Large (24 px)'];
+
+// A note with a local, two remote and a data-URI image (written by this probe, not in test-vault).
+const REMOTE_NOTE = 'Remote images.md';
+const REMOTE_IMAGES = [
+	['local', '![[square.png|80]]'],
+	['remoteWrapped', '![remote|wrap-left|100]'],
+	['remotePlain', '![remote plain|100]'],
+	['data', '![teal|120]'],
+];
+const remoteNote = (base) =>
+	[
+		'# Remote images',
+		'',
+		'Opening paragraph. The quick brown fox jumps over the lazy dog, again and again, so that it wraps.',
+		'',
+		'![[square.png|80]]',
+		'',
+		'Text after the local image. The quick brown fox jumps over the lazy dog.',
+		'',
+		`![remote|wrap-left|100](${base}/a.png)`,
+		'',
+		'Text beside the wrapped remote image. The quick brown fox jumps over the lazy dog, again and again, so that this paragraph spans several lines.',
+		'',
+		`![remote plain|100](${base}/b.png)`,
+		'',
+		'Text after the plain remote image. The quick brown fox jumps over the lazy dog.',
+		'',
+		sourceNote('Fixture.md')
+			.split('\n')
+			.find((l) => l.startsWith('![teal|'))
+			.replace('|wrap-right|', '|'),
+		'',
+		'Text after the data image. The quick brown fox jumps over the lazy dog.',
+		'',
+	].join('\n');
+
+/** Serves test-vault/images/square.png on a free local port while `body(baseUrl)` runs. */
+async function withImageServer(body) {
+	const png = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../test-vault/images/square.png'));
+	const server = createServer((_req, res) => {
+		res.writeHead(200, { 'content-type': 'image/png' });
+		res.end(png);
+	});
+	await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+	try {
+		await body(`http://127.0.0.1:${server.address().port}`);
+	} finally {
+		server.close();
+	}
+}
+
+/** Right-clicks a picture near its bottom-left corner, clear of Obsidian's zoom/edit buttons and resize corner. */
+async function rightClickCorner(page, needle) {
+	const img = await imageRect(page, needle);
+	await page.mouse.click(img.left + 6, img.bottom - 6, { button: 'right' });
+	await sleep(400);
+	return state(page);
+}
 
 async function rightClick(page, needle) {
 	const img = await imageRect(page, needle);
@@ -45,6 +107,10 @@ export default probe(async (h, check) => {
 	const { page } = h;
 	const errors = h.watchErrors(page);
 	await h.setWindowSize(page, 1280, 900);
+	// After a fresh launch Obsidian's Settings window is open (it opens when the vault is trusted) and is
+	// Obsidian's active window, which is where notices go: close it first.
+	await page.evaluate(() => app.setting?.close());
+	await sleep(500);
 	const nativeBefore = await page.evaluate(() => app.vault.getConfig('nativeMenus'));
 	await page.evaluate(() => app.vault.setConfig('nativeMenus', false));
 	const NOTE = 'Plain images.md';
@@ -129,6 +195,46 @@ export default probe(async (h, check) => {
 		await closeMenu(page);
 		await closeLightbox(page);
 
+		// Remote and data-URI images: Obsidian builds their menu itself and fires no file-menu; the entries
+		// are added to that same menu, once. The remote pictures come from a server in this process.
+		await withImageServer(async (base) => {
+			const text = remoteNote(base);
+			await h.setNote(page, REMOTE_NOTE, text);
+			await h.openNote(page, REMOTE_NOTE, 'live');
+			await sleep(800);
+			await clickText(page);
+			const menus = {};
+			for (const [name, needle] of REMOTE_IMAGES) {
+				await showImage(page, needle);
+				const m = await rightClickCorner(page, needle);
+				menus[name] = { obsidian: m.menu.some((i) => i.title === 'Copy image'), ours: m.menu.filter((i) => OURS.includes(i.title) || i.title.startsWith('Spacing')).map((i) => `${i.title}${i.checked ? ' (checked)' : ''}`) };
+				await closeMenu(page);
+			}
+			check('remote image (wrapped): the layout and spacing entries in Obsidian\'s own menu, "wrap left" and medium checked', menus.remoteWrapped.obsidian && menus.remoteWrapped.ours.join() === 'In line with text,Wrap text left (checked),Wrap text right,Top and bottom,Spacing: None,Spacing: Small (8 px),Spacing: Medium (16 px) (checked),Spacing: Large (24 px)', menus.remoteWrapped);
+			check('remote image (in line): the four layout entries once, "in line" checked', menus.remotePlain.obsidian && menus.remotePlain.ours.join() === 'In line with text (checked),Wrap text left,Wrap text right,Top and bottom', menus.remotePlain);
+			check('data-URI image: the four layout entries once', menus.data.obsidian && menus.data.ours.join() === 'In line with text (checked),Wrap text left,Wrap text right,Top and bottom', menus.data);
+			check('local image beside them: the entries once (no duplicates)', menus.local.ours.join() === 'In line with text (checked),Wrap text left,Wrap text right,Top and bottom', menus.local);
+
+			await rightClickCorner(page, '![remote plain|100]');
+			await clickMenuItem(page, 'Wrap text right');
+			let r = await state(page);
+			let rdiff = diffLines(text, r.doc);
+			check('remote image menu "Wrap text right" changes only its link', rdiff.length === 1 && rdiff[0].after === `![remote plain|wrap-right|100](${base}/b.png)`, rdiff);
+			await rightClickCorner(page, '![remote|wrap-left|100]');
+			await clickMenuItem(page, 'Spacing: Large (24 px)');
+			await rightClickCorner(page, '![teal|120]');
+			await clickMenuItem(page, 'Top and bottom');
+			r = await state(page);
+			rdiff = diffLines(text, r.doc);
+			const at = (line) => rdiff.find((d) => d.line === line)?.after ?? '';
+			check('remote spacing and data-URI "Top and bottom" write only their links', rdiff.length === 3 && at(9) === `![remote|wrap-left|gap-24|100](${base}/a.png)` && at(17).startsWith('![teal|wrap-block|120](data:'), rdiff.map((d) => ({ line: d.line, after: d.after.slice(0, 50) })));
+			for (let i = 0; i < 3; i++) {
+				await page.keyboard.press('Meta+z');
+				await sleep(300);
+			}
+			check('remote and data-URI menu actions undo one step each', (await state(page)).doc === text, diffLines(text, (await state(page)).doc));
+		});
+
 		// Native menus (the macOS default): the entries are added to the same menu object.
 		await page.evaluate(() => app.vault.setConfig('nativeMenus', true));
 		await freshNote(page, h, NOTE);
@@ -136,6 +242,7 @@ export default probe(async (h, check) => {
 		await page.evaluate(() => {
 			window.__itwItems = null;
 			window.__itwRef = app.workspace.on('file-menu', (menu) => {
+				window.__itwMenuClass = menu.constructor;
 				// Runs after the plugin's handler (registered later). Reads Obsidian's internal item list, for evidence only.
 				setTimeout(() => {
 					window.__itwItems = (menu.items ?? []).map((i) => i.titleEl?.textContent ?? i.title ?? null);
@@ -152,6 +259,33 @@ export default probe(async (h, check) => {
 			return window.__itwItems;
 		});
 		check('native menu: the four layout entries are added', Array.isArray(nativeItems) && OURS.every((t) => nativeItems.includes(t)), nativeItems);
+		// A data-URI image has no file-menu: its native menu is read as Obsidian shows it (evidence only).
+		await freshNote(page, h, 'Fixture.md');
+		await showImage(page, '![teal|wrap-right|120]');
+		await page.evaluate(() => {
+			const proto = window.__itwMenuClass.prototype;
+			window.__itwShow = proto.showAtMouseEvent;
+			window.__itwOwn = Object.hasOwn(proto, 'showAtMouseEvent');
+			window.__itwItems = null;
+			proto.showAtMouseEvent = function (...args) {
+				window.__itwItems = (this.items ?? []).map((i) => i.titleEl?.textContent ?? i.title ?? null);
+				return window.__itwShow.apply(this, args);
+			};
+		});
+		await rightClickCorner(page, '![teal|wrap-right|120]');
+		await sleep(200);
+		await page.keyboard.press('Escape');
+		await sleep(300);
+		const nativeData = await page.evaluate(() => {
+			const proto = window.__itwMenuClass.prototype;
+			if (window.__itwOwn) proto.showAtMouseEvent = window.__itwShow;
+			else delete proto.showAtMouseEvent;
+			delete window.__itwShow;
+			delete window.__itwOwn;
+			delete window.__itwMenuClass;
+			return window.__itwItems;
+		});
+		check('native menu of a data-URI image: the layout entries are added once', Array.isArray(nativeData) && OURS.every((t) => nativeData.filter((x) => x === t).length === 1) && nativeData.includes('Spacing: Medium (16 px)'), nativeData);
 		await page.evaluate(() => app.vault.setConfig('nativeMenus', false));
 
 		// Commands, through the real command palette.

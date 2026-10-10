@@ -9,9 +9,11 @@
 // maps to its line through getSectionInfo() and its order in the section; the write goes through
 // vault.process, never the hidden editor. Obsidian 1.14.4 opens its lightbox on a right-click in Reading
 // view and fires no file-menu there, so this path only runs where Obsidian does show that menu.
-// Remote and data-URI images get no entries: Obsidian's menu for them fires no file-menu event.
+//
+// Remote and data-URI images in Live Preview: Obsidian builds their menu with Menu.forEvent and fires no
+// file-menu, so the entries go into that same menu, from the right-click on its way back up.
 import { Text } from '@codemirror/state';
-import { type App, type MarkdownPostProcessorContext, type Menu, type TFile } from 'obsidian';
+import { Component, Menu, type App, type MarkdownPostProcessorContext, type TFile } from 'obsidian';
 import { drawnImages, drawnTarget, editableImageFrom, editorViewFor, isElement, readingImageFrom } from './dom';
 import { locateAt } from './edit/locate';
 import { setLayoutInFile } from './edit/write';
@@ -30,22 +32,37 @@ const LAYOUT_SECTION = 'image-text-wrap';
 const SPACING_SECTION = 'image-text-wrap-spacing';
 /** A file-menu this long after the right-click belongs to some other gesture. */
 const CLICK_TTL_MS = 1000;
+/** Live Preview (1.14.4): the element inside an image embed whose right-click opens Obsidian's image menu. */
+const IMAGE_WRAPPER = '.image-wrapper';
 
 interface MenuSubject {
 	layout: Layout;
 	apply(layout: Layout): void;
 }
 
-/** Runs `watch` for the main window's document and for every pop-out window's, now and later. */
-function onEveryDocument(plugin: ImageTextWrapPlugin, watch: (doc: Document) => void): void {
-	const seen = new WeakSet<Document>();
+/**
+ * Runs `watch` for the main window's document and for every pop-out window's, now and later. Each document
+ * gets a component of its own, unloaded when its window closes: listeners registered on it then let go of
+ * the closed window, which would otherwise stay in memory until the plugin unloads.
+ */
+function onEveryDocument(plugin: ImageTextWrapPlugin, watch: (doc: Document, owner: Component) => void): void {
+	const owners = new Map<Document, Component>();
 	const add = (doc: Document) => {
-		if (seen.has(doc)) return;
-		seen.add(doc);
-		watch(doc);
+		if (owners.has(doc)) return;
+		const owner = plugin.addChild(new Component());
+		owners.set(doc, owner);
+		watch(doc, owner);
 	};
 	add(document);
 	plugin.registerEvent(plugin.app.workspace.on('window-open', (win) => add(win.doc)));
+	plugin.registerEvent(
+		plugin.app.workspace.on('window-close', (win) => {
+			const owner = owners.get(win.doc);
+			if (!owner) return;
+			owners.delete(win.doc);
+			plugin.removeChild(owner);
+		}),
+	);
 	plugin.app.workspace.onLayoutReady(() => {
 		plugin.app.workspace.iterateAllLeaves((leaf) => add(leaf.view.containerEl.doc));
 	});
@@ -131,16 +148,35 @@ function addLayoutItems(menu: Menu, subject: MenuSubject, defaultGap: Gap): void
 export function registerImageMenu(plugin: ImageTextWrapPlugin): void {
 	registerIcons(plugin);
 	let clicked: { target: HTMLElement; at: number } | null = null;
-	onEveryDocument(plugin, (doc) =>
-		plugin.registerDomEvent(
+	/** Menus already given (or checked for) the layout entries, so no image gets them twice. */
+	const handled = new WeakSet<Menu>();
+	onEveryDocument(plugin, (doc, owner) => {
+		owner.registerDomEvent(
 			doc,
 			'contextmenu',
 			(e) => {
 				clicked = isElement(e.target) ? { target: e.target, at: Date.now() } : null;
 			},
 			{ capture: true },
-		),
-	);
+		);
+		// The noted element must not keep a closed window alive either.
+		owner.register(() => {
+			if (clicked?.target.doc === doc) clicked = null;
+		});
+		// On the way back up, after Obsidian's own handler: a prevented default on an image means Obsidian
+		// is building its image menu, and Menu.forEvent returns that same menu. A local image had its
+		// entries added through file-menu already.
+		owner.registerDomEvent(doc, 'contextmenu', (e) => {
+			if (!e.defaultPrevented || !isElement(e.target) || !e.target.closest(IMAGE_WRAPPER)) return;
+			if (!editableImageFrom(e.target)) return;
+			const menu = Menu.forEvent(e);
+			if (handled.has(menu)) return;
+			handled.add(menu);
+			clicked = null;
+			const subject = livePreviewSubject(e.target);
+			if (subject) addLayoutItems(menu, subject, plugin.settings.defaultGap);
+		});
+	});
 
 	const sections = new WeakMap<HTMLElement, MarkdownPostProcessorContext>();
 	plugin.registerMarkdownPostProcessor((el, ctx) => {
@@ -152,6 +188,7 @@ export function registerImageMenu(plugin: ImageTextWrapPlugin): void {
 			const click = clicked;
 			if (source !== 'link-context-menu' || !click || Date.now() - click.at > CLICK_TTL_MS) return;
 			clicked = null;
+			handled.add(menu);
 			const subject = livePreviewSubject(click.target) ?? readingSubject(plugin.app, click.target, sections);
 			if (subject) addLayoutItems(menu, subject, plugin.settings.defaultGap);
 		}),

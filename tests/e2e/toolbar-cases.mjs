@@ -122,6 +122,42 @@ export default probe(async (h, check) => {
 	await sleep(300);
 	check('(info) one undo reverts the native resize', (await state(page)).doc === original, 'Obsidian writes the resize itself');
 
+	// Dragging the selected picture: the toolbar is not painted in any frame of the drag, and after Esc
+	// cancels the drag it is back where it was, the picture still selected.
+	await clickText(page);
+	img = await showImage(page, '![[landscape.png|wrap-left|300]]');
+	await page.mouse.click(img.x, img.y);
+	await sleep(400);
+	before = await state(page);
+	await page.evaluate(() => {
+		// Every animation frame: is the drag on, and is the toolbar painted?
+		const frames = (window.__itwFrames = []);
+		const tick = () => {
+			const tb = document.querySelector('.itw-toolbar');
+			frames.push({ dragging: document.body.classList.contains('itw-dragging'), painted: !!tb && getComputedStyle(tb).visibility === 'visible' });
+			if (window.__itwFrames === frames && frames.length < 3000) requestAnimationFrame(tick);
+		};
+		requestAnimationFrame(tick);
+	});
+	await page.mouse.move(img.x, img.y);
+	await page.mouse.down();
+	await page.mouse.move(img.x + 8, img.y + 8, { steps: 2 });
+	await page.mouse.move(img.x + 260, img.y + 160, { steps: 14 });
+	await sleep(250);
+	await page.keyboard.press('Escape');
+	await sleep(300);
+	await page.mouse.up();
+	await sleep(500);
+	after = await state(page);
+	const dragFrames = await page.evaluate(() => {
+		const frames = window.__itwFrames;
+		window.__itwFrames = null;
+		return frames;
+	});
+	const whileDragging = dragFrames.filter((f) => f.dragging);
+	check('toolbar hidden in every frame of a drag of its picture', whileDragging.length > 5 && whileDragging.every((f) => !f.painted), { framesDragging: whileDragging.length, paintedWhileDragging: whileDragging.filter((f) => f.painted).length });
+	check('after Esc cancels the drag: toolbar back in place, picture still selected, note unchanged', after.visible && after.selected && after.doc === original && JSON.stringify(after.toolbar) === JSON.stringify(before.toolbar) && dragFrames[dragFrames.length - 1].painted, { before: before.toolbar, after: after.toolbar, selected: after.selected });
+
 	// Remote (data URI) image: Obsidian selects it the same way, and its link is found by position.
 	await clickText(page);
 	img = await showImage(page, '![teal|wrap-right|120]');

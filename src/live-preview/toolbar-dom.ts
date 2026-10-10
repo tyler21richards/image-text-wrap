@@ -13,7 +13,7 @@ import {
 	layoutAfterWrapClick,
 	layoutForGap,
 } from '../ui/layout-choices';
-import type { Placement } from '../ui/place-toolbar';
+import { samePlace, type Placement } from '../ui/place-toolbar';
 
 /** The image link the toolbar is showing, as seen when it was last drawn. */
 export interface ToolbarSubject {
@@ -44,6 +44,10 @@ export class PictureToolbar {
 	private readonly spacingButton: HTMLButtonElement;
 	private spacingTooltip = '';
 	private menu: Menu | null = null;
+	/** Where the toolbar was last shown, or null while it is hidden. */
+	private shownAt: Placement | null = null;
+	/** The button (or the toolbar itself) the pointer is over, whose tooltip Obsidian may be showing. */
+	private pointed: HTMLElement | null = null;
 
 	constructor(readonly doc: Document) {
 		this.el = doc.body.createDiv({
@@ -68,6 +72,13 @@ export class PictureToolbar {
 		this.el.addEventListener('mousedown', keepFocus);
 		this.el.addEventListener('keydown', (e) => {
 			if (e.key === 'Escape') this.host?.dismiss();
+		});
+		const buttons = [...this.wrapButtons.values(), this.spacingButton];
+		this.el.addEventListener('pointerover', (e) => {
+			this.pointed = buttons.find((b) => b.contains(e.target as Node | null)) ?? this.el;
+		});
+		this.el.addEventListener('pointerleave', () => {
+			this.pointed = null;
 		});
 	}
 
@@ -106,6 +117,10 @@ export class PictureToolbar {
 	}
 
 	showAt(placement: Placement): void {
+		// The Spacing dropdown is placed once, under its button: when the toolbar moves (the note scrolled,
+		// the window was resized, the text reflowed), it closes rather than stay behind.
+		if (this.shownAt && !samePlace(this.shownAt, placement)) this.menu?.hide();
+		this.shownAt = placement;
 		this.el.setCssStyles({ left: `${placement.left}px`, top: `${placement.top}px` });
 		this.el.dataset.placement = placement.where;
 		this.el.removeClass(HIDDEN);
@@ -113,14 +128,30 @@ export class PictureToolbar {
 
 	hide(): void {
 		this.menu?.hide();
+		this.endHover();
 		this.el.addClass(HIDDEN);
 		this.subject = null;
+		this.shownAt = null;
 	}
 
 	destroy(): void {
 		this.menu?.hide();
+		this.endHover();
 		this.el.remove();
 		this.host = null;
+	}
+
+	/**
+	 * Obsidian hides a button's tooltip when the pointer leaves the button. Hiding the toolbar under a still
+	 * pointer (Esc) sends no such event, so the tooltip would stay until the mouse moves: tell Obsidian's
+	 * tooltip the pointer left, with the toolbar window's own event type so pop-out windows work too.
+	 */
+	private endHover(): void {
+		const pointed = this.pointed;
+		const win = this.doc.defaultView;
+		this.pointed = null;
+		if (!pointed || !win) return;
+		pointed.dispatchEvent(new win.PointerEvent('pointerout', { bubbles: true, pointerType: 'mouse' }));
 	}
 
 	private chooseWrap(wrap: Wrap): void {

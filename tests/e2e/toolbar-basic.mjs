@@ -16,6 +16,36 @@ import {
 const NOTE = 'Plain images.md';
 const LINK = '![[landscape.png|320]]';
 
+/** The text of every tooltip Obsidian shows. */
+const tooltips = (page) => page.evaluate(() => [...document.querySelectorAll('.tooltip')].map((t) => t.textContent));
+
+/** Rests the mouse on a toolbar button until Obsidian shows its tooltip; returns the tooltips shown. */
+async function hoverButton(page, label) {
+	const b = (await state(page)).buttons.find((x) => x.label === label);
+	if (!b) return ['no button'];
+	await page.mouse.move(b.rect.left + 3, b.rect.top - 20, { steps: 3 });
+	await sleep(200);
+	await page.mouse.move((b.rect.left + b.rect.right) / 2, (b.rect.top + b.rect.bottom) / 2, { steps: 5 });
+	await sleep(1300);
+	return tooltips(page);
+}
+
+/** The Spacing dropdown and the toolbar's position. */
+function dropdown(page) {
+	return page.evaluate(() => {
+		const tb = [...document.querySelectorAll('.itw-toolbar')].find((t) => !t.classList.contains('itw-toolbar-hidden'));
+		const button = tb && [...tb.querySelectorAll('button')].find((b) => b.getAttribute('aria-label')?.startsWith('Spacing'));
+		const menu = document.querySelector('.menu');
+		return {
+			visible: !!tb,
+			toolbarTop: tb ? Math.round(tb.getBoundingClientRect().top) : null,
+			open: !!menu,
+			menuTop: menu ? Math.round(menu.getBoundingClientRect().top) : null,
+			expanded: button?.getAttribute('aria-expanded') ?? null,
+		};
+	});
+}
+
 export default async (h) => {
 	const { page } = h;
 	const errors = h.watchErrors(page);
@@ -87,15 +117,20 @@ export default async (h) => {
 	s = await state(page);
 	check('fully undone equals the original note', s.doc === original, diffLines(original, s.doc));
 
-	// Esc hides the toolbar but leaves Obsidian's selection alone; a new click brings it back.
+	// Esc hides the toolbar but leaves Obsidian's selection alone; a new click brings it back. The pointer
+	// rests on a button meanwhile: its tooltip goes away with the toolbar although the mouse does not move.
 	await clickText(page);
 	img = await showImage(page, LINK);
 	await page.mouse.click(img.x, img.y);
 	await sleep(350);
+	const tipBefore = await hoverButton(page, 'Top and bottom');
 	await page.keyboard.press('Escape');
 	await sleep(300);
 	s = await state(page);
+	const tipAfter = await tooltips(page);
 	check('Esc hides the toolbar (image stays selected by Obsidian)', !s.visible && s.selected, { visible: s.visible, selected: s.selected });
+	check('Esc with the pointer on a button: its tooltip goes with the toolbar', tipBefore.join() === 'Top and bottom' && tipAfter.length === 0, { tipBefore, tipAfter });
+	await page.mouse.move(900, 700, { steps: 3 });
 	await clickText(page);
 	s = await state(page);
 	check('deselect (click in text) hides it', !s.visible && !s.selected, { visible: s.visible, selected: s.selected });
@@ -103,6 +138,9 @@ export default async (h) => {
 	await sleep(350);
 	s = await state(page);
 	check('selecting again after Esc shows it', s.visible && s.selected, { visible: s.visible });
+	const tipAgain = await hoverButton(page, 'Wrap text right');
+	check('tooltips still work after that', tipAgain.join() === 'Wrap text right', tipAgain);
+	await page.mouse.move(900, 700, { steps: 3 });
 
 	// Scrolling the picture out of the visible scroller hides the toolbar; scrolling back shows it.
 	await page.mouse.move(800, 600);
@@ -121,6 +159,25 @@ export default async (h) => {
 	}
 	s = await state(page);
 	check('shows again when scrolled back', s.visible && s.selected, { visible: s.visible, scrollTop: s.scrollTop });
+
+	// The Spacing dropdown is placed under its button once: it stays open while the toolbar stays put, and
+	// closes when the toolbar moves (a real wheel scroll over the note) rather than stay behind.
+	const docBefore = s.doc;
+	await clickButton(page, 'Wrap text left');
+	await clickButton(page, 'Spacing');
+	const open0 = await dropdown(page);
+	await page.evaluate(() => app.workspace.trigger('css-change'));
+	await sleep(400);
+	const open1 = await dropdown(page);
+	check('Spacing dropdown stays open while the toolbar stays put', open0.open && open1.open && open1.menuTop === open0.menuTop && open1.toolbarTop === open0.toolbarTop, { open0, open1 });
+	await page.mouse.move(1000, 650);
+	await page.mouse.wheel(0, 120);
+	await sleep(600);
+	const moved = await dropdown(page);
+	check('Spacing dropdown closes when the toolbar moves', moved.visible && moved.toolbarTop !== open0.toolbarTop && !moved.open && moved.expanded === 'false', { open0, moved });
+	await page.keyboard.press('Meta+z');
+	await sleep(300);
+	check('(cleanup) undo restores the note', (await state(page)).doc === docBefore, diffLines(docBefore, (await state(page)).doc));
 
 	// Switching the note to Source mode or Reading view hides it.
 	await page.evaluate(() => app.commands.executeCommandById('editor:toggle-source'));

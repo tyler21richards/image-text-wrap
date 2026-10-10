@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { placeToolbar, visiblePart, type Box, type PlaceInput } from '../../src/ui/place-toolbar.ts';
+import { placeToolbar, samePlace, visiblePart, type Box, type PlaceInput } from '../../src/ui/place-toolbar.ts';
 
 const box = (left: number, top: number, right: number, bottom: number): Box => ({ left, top, right, bottom });
 const overlaps = (a: Box, b: Box) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
@@ -92,4 +92,21 @@ test('never leaves the visible scroller vertically', () => {
 test('a column narrower than the toolbar: aligned to the column', () => {
 	const p = input(box(462, 300, 562, 400), { column: box(460, 0, 560, 9999) });
 	assert.equal(placeToolbar(p)!.left, 460);
+});
+
+test('whole pixels: a re-measure with sub-pixel jitter gives the same spot', () => {
+	// The picture's rectangle comes from getBoundingClientRect, with fractions (a line at 273.328125).
+	const a = placeToolbar(input(box(462, 273.328125, 782, 483.328125)))!;
+	const b = placeToolbar(input(box(462.2, 273.4, 782.2, 483.4)))!;
+	for (const at of [a, b]) assert.ok(Number.isInteger(at.left) && Number.isInteger(at.top), JSON.stringify(at));
+	assert.equal(samePlace(a, b), true);
+});
+
+test('samePlace: the toolbar moved when the picture scrolled, not when only the side changed', () => {
+	const above = placeToolbar(input(box(462, 300, 782, 500)))!;
+	const scrolled = placeToolbar(input(box(462, 180, 782, 380)))!;
+	assert.equal(samePlace(above, scrolled), false);
+	assert.equal(samePlace(above, { ...above }), true);
+	assert.equal(samePlace(above, { ...above, left: above.left + 1 }), false);
+	assert.equal(samePlace(above, { ...above, where: 'inside' }), true);
 });
