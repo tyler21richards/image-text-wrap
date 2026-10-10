@@ -141,6 +141,127 @@ export async function resetNote(page, _setNote, text = fixtureText()) {
 	await frames(page, 3);
 }
 
+/**
+ * Closes Obsidian's image viewer (or a modal) if an earlier probe left it open: it covers the whole window,
+ * so the first press would land on it. The viewer does not always have the keyboard, so its close button
+ * (or its background) is clicked, as a user would.
+ */
+export async function closeViewer(page) {
+	for (let i = 0; i < 3; i++) {
+		const target = await page.evaluate(() => {
+			const box = document.querySelector('.lightbox');
+			if (!box) return document.querySelector('.modal-container') ? 'escape' : null;
+			const close = [...box.querySelectorAll('.lightbox-titlebar .clickable-icon, .lightbox-titlebar button')].pop();
+			const r = (close ?? box.querySelector('.lightbox-bg') ?? box).getBoundingClientRect();
+			return close ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : { x: r.left + 10, y: r.bottom - 10 };
+		});
+		if (!target) return;
+		if (target === 'escape') await page.keyboard.press('Escape');
+		else await page.mouse.click(target.x, target.y);
+		await sleep(350);
+	}
+}
+
+/**
+ * Writes `text` to the note at `path`, opens it in Live Preview, puts the cursor on its first line and
+ * scrolls to the top. For probes that need a note of their own.
+ */
+export async function openText(page, h, path, text) {
+	await page.keyboard.press('Escape').catch(() => {});
+	await h.setNote(page, path, text);
+	await h.openNote(page, path, 'live');
+	await resetNote(page, null, text);
+	await page.evaluate(() => {
+		const cm = app.workspace.activeLeaf.view.editor.cm;
+		cm.dispatch({ selection: { anchor: 0 } });
+		cm.scrollDOM.scrollTop = 0;
+	});
+	await sleep(300);
+	await frames(page, 3);
+}
+
+/** Index of the first line starting with `prefix`, or -1. */
+export async function lineStarting(page, prefix) {
+	return page.evaluate((prefix) => {
+		const doc = app.workspace.activeLeaf.view.editor.cm.state.doc;
+		for (let i = 1; i <= doc.lines; i++) if (doc.line(i).text.startsWith(prefix)) return i - 1;
+		return -1;
+	}, prefix);
+}
+
+/**
+ * The real image embed whose link starts with `prefix`, wherever it is now: its line, its box and its
+ * picture's box (client px), or null when it is not drawn.
+ */
+export async function embedOf(page, prefix) {
+	return page.evaluate((prefix) => {
+		const cm = app.workspace.activeLeaf.view.editor.cm;
+		const doc = cm.state.doc;
+		for (const el of cm.contentDOM.querySelectorAll('.internal-embed.image-embed')) {
+			let pos = -1;
+			try {
+				pos = cm.posAtDOM(el);
+			} catch {
+				continue;
+			}
+			const line = doc.lineAt(pos);
+			if (!doc.sliceString(pos, line.to).startsWith(prefix)) continue;
+			const r = (e) => {
+				const b = e.getBoundingClientRect();
+				return { top: Math.round(b.top * 10) / 10, bottom: Math.round(b.bottom * 10) / 10, left: Math.round(b.left), right: Math.round(b.right) };
+			};
+			const img = el.querySelector('img');
+			return { line: line.number - 1, float: getComputedStyle(el).float, box: r(el), img: img ? r(img) : null };
+		}
+		return null;
+	}, prefix);
+}
+
+/**
+ * Where the drop indicator was asked to be drawn (its CSS variables, client px): the bar and the outline
+ * box tops, or null for a part that is hidden.
+ */
+export async function indicatorTops(page) {
+	return page.evaluate(() => {
+		const y = (sel) => {
+			const el = document.querySelector(sel);
+			if (!el || el.classList.contains('is-hidden')) return null;
+			return Math.round(parseFloat(el.style.getPropertyValue('--itw-drop-y')) * 10) / 10;
+		};
+		return { bar: y('.itw-drop-bar'), box: y('.itw-drop-box'), label: document.querySelector('.itw-drop-label:not(.is-hidden)')?.textContent ?? null };
+	});
+}
+
+/** Client tops of the first lines starting with each prefix (null when there is none). */
+export async function lineTops(page, prefixes) {
+	return page.evaluate((prefixes) => {
+		const cm = app.workspace.activeLeaf.view.editor.cm;
+		const doc = cm.state.doc;
+		const out = {};
+		for (const p of prefixes) {
+			out[p] = null;
+			for (let i = 1; i <= doc.lines; i++) {
+				if (!doc.line(i).text.startsWith(p)) continue;
+				out[p] = Math.round((cm.lineBlockAt(doc.line(i).from).top + cm.documentTop) * 10) / 10;
+				break;
+			}
+		}
+		return out;
+	}, prefixes);
+}
+
+export const scrollTop = (page) => page.evaluate(() => Math.round(app.workspace.activeLeaf.view.editor.cm.scrollDOM.scrollTop));
+
+/** The stand-in copies drawn now (stand-ins.ts): their link positions and boxes. */
+export async function standIns(page) {
+	return page.evaluate(() =>
+		[...app.workspace.activeLeaf.view.editor.cm.contentDOM.querySelectorAll('.itw-stand-in-float')].map((el) => {
+			const b = el.getBoundingClientRect();
+			return { from: Number(el.dataset.from), top: Math.round(b.top), bottom: Math.round(b.bottom) };
+		}),
+	);
+}
+
 /** Lines of `text` that differ from `before`, as [index, before, after] (a quick diff for reports). */
 export function changedLines(before, after) {
 	const a = before.split('\n');

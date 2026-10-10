@@ -37,6 +37,7 @@ export default async ({ page, setWindowSize, setNote, openNote, watchErrors, arg
 	const original = d.fixtureText();
 
 	await setWindowSize(page, 1280, 900);
+	await d.closeViewer(page);
 	await openNote(page, d.FIXTURE, 'live');
 
 	const neutralCursor = () =>

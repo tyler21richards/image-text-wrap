@@ -58,6 +58,25 @@ test('targets sharing a top (a fold) count as the first of them', () => {
 	assert.equal(nearestTarget(tops.length, at, 99), 1);
 });
 
+test('below the note the end of the note wins, even when the last line takes no height', () => {
+	// The last line holds only a wrapped image (0 high), so its top is the note's bottom, as is the end's.
+	const tops = [10, 100, 298, 298];
+	const at = (i: number) => tops[i]!;
+	// Without the end flag the end can never win.
+	assert.equal(nearestTarget(tops.length, at, 304), 2);
+	assert.equal(nearestTarget(tops.length, at, 900), 2);
+	// With it, anything below the note picks the end; on or above the bottom nothing changes.
+	assert.equal(nearestTarget(tops.length, at, 299, true), 3);
+	assert.equal(nearestTarget(tops.length, at, 900, true), 3);
+	assert.equal(nearestTarget(tops.length, at, 298, true), 2);
+	assert.equal(nearestTarget(tops.length, at, 250, true), 2);
+	assert.equal(nearestTarget(tops.length, at, 20, true), 0);
+	// A note whose last line has height: the same answers as before.
+	const plain = [10, 100, 274, 298];
+	const atPlain = (i: number) => plain[i]!;
+	for (const y of [0, 90, 280, 290, 298, 500]) assert.equal(nearestTarget(plain.length, atPlain, y, true), nearestTarget(plain.length, atPlain, y), `y ${y}`);
+});
+
 test('nearestTarget only looks at a few targets', () => {
 	let calls = 0;
 	const at = (i: number) => {

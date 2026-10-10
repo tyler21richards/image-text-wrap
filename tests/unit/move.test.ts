@@ -180,6 +180,48 @@ test('the line after a heading, and after frontmatter, gets a blank line before 
 	assert.equal(moved(text, 8, 6).out, join('---', 'tags: [a]', '---', 'First', '', '# H', '', '![[a.png]]', '', 'Under the heading'));
 });
 
+/**
+ * Checks that `plan.landing` and `plan.linkLine` describe the planned text: the link's line follows exactly
+ * `blankLines` new blank lines, and before those comes the original line `landing.line - 1` (its text, or
+ * the source line with the link taken out), or nothing when `landing.line` is 0.
+ */
+function checkLanding(text: string, plan: MovePlan, source: number) {
+	const lines = text.split('\n');
+	const { linkLine, landing } = plan;
+	assert.ok(plan.lines[linkLine]!.includes('![['), `the link is on line ${linkLine} of:\n${plan.lines.join('\n')}`);
+	for (let k = 1; k <= landing.blankLines; k++) assert.equal(plan.lines[linkLine - k]!.trim(), '', `blank line ${k} above the link`);
+	const before = linkLine - landing.blankLines - 1;
+	if (landing.line === 0) assert.equal(before, -1, 'nothing above the link');
+	else if (landing.line - 1 === source) assert.ok(!plan.lines[before]!.includes('![['), 'the source line, link taken out');
+	else assert.equal(plan.lines[before], lines[landing.line - 1], 'the original line above the inserted lines');
+}
+
+test('the plan says where the link line lands: below the line before, after any new blank line', () => {
+	const cases: Array<[string, string, number, number, { line: number; blankLines: number }]> = [
+		// [what, text, source, target, landing]
+		['blank line before the target', join('P1', '', '![[a.png|wrap-left]]', 'Text A', '', 'P2'), 2, 5, { line: 5, blankLines: 0 }],
+		['heading right after a paragraph', join('![[a.png|wrap-left]]', 'Text', '', 'Para', '## Heading', 'After'), 0, 4, { line: 4, blankLines: 1 }],
+		['paragraph right under a heading', join('P1', '', '## Heading', 'Under', '', '![[a.png|wrap-left]]'), 5, 3, { line: 3, blankLines: 1 }],
+		// The removal takes the image and the blank line under it, right above the target: it lands where the image was.
+		['removal right above the target', join('P0', '', '![[a.png|wrap-left]]', '', 'T'), 2, 4, { line: 2, blankLines: 0 }],
+		['up to the start of the note', join('P1', '', '![[a.png]]'), 2, 0, { line: 0, blankLines: 0 }],
+		['end of the note, no trailing newline', join('P1', '', '![[a.png|wrap-left]]', 'Text A', '', 'P2'), 2, 6, { line: 6, blankLines: 1 }],
+		// The note's own last (empty) line is where the blank line before the image goes.
+		['end of the note, trailing newline', join('![[a.png|wrap-left]]', 'Text', '', 'P2', ''), 0, 5, { line: 4, blankLines: 1 }],
+		['end of the note, several blank lines', join('![[a.png]]', '', 'P2', '', '', ''), 0, 6, { line: 4, blankLines: 0 }],
+		// A note ending with a wrapped image line: the end of the note is after it and a blank line.
+		['end of the note after a wrapped image', join('![[a.png|wrap-left]]', 'Text', '', '![[b.png|wrap-right]]'), 0, 4, { line: 4, blankLines: 1 }],
+		['the link shared its line', join('Before ![[a.png]] after', '', 'P2'), 0, 2, { line: 2, blankLines: 0 }],
+		['side change in the same place', join('P1', '', '![[a.png|wrap-left]]', 'Text A'), 2, 2, { line: 2, blankLines: 0 }],
+	];
+	for (const [what, text, source, target, landing] of cases) {
+		const link = what === 'side change in the same place' ? '![[a.png|wrap-right]]' : undefined;
+		const { plan } = moved(text, source, target, { link });
+		assert.deepEqual(plan.landing, landing, what);
+		checkLanding(text, plan, source);
+	}
+});
+
 test('an unwrapped image always gets a paragraph of its own', () => {
 	const text = join('P1', '', '![[a.png]]', '', '# Heading', '', '- item');
 	assert.equal(moved(text, 2, 6).out, join('P1', '', '# Heading', '', '![[a.png]]', '', '- item'));
@@ -293,6 +335,7 @@ test('moving to every target of the fixture-like note keeps every other line', (
 		const same = target === 4;
 		assert.equal(plan!.changes.length, same ? 0 : 2, `target ${target}: change count`);
 		assert.equal(plan!.changes.filter((c) => c.insert === '').length, same ? 0 : 1, `target ${target}: one removal`);
+		checkLanding(text, plan!, 4);
 	}
 });
 
