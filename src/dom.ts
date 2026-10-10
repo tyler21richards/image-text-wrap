@@ -145,3 +145,8 @@ export function drawnImages(section: HTMLElement): HTMLElement[] {
 export function drawnTarget(image: HTMLElement): string | null {
 	return image.getAttribute('src');
 }
+
+/** The picture itself inside an image embed (Live Preview); presses on it, and only on it, start a drag. */
+export const IMAGE_IN_EMBED = '.image-wrapper > img';
+/** One pane of the workspace (a note, a sidebar view). A drag only drops in the pane it started in. */
+export const PANE = '.workspace-leaf';
