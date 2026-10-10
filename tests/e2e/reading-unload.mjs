@@ -18,8 +18,8 @@ function census() {
 			sections: sections.length,
 			withNoteClass: sections.filter((el) => el.classList.contains('itw-wrap-note')).length,
 			hosts: sections.filter((el) => el.classList.contains('itw-host') || el.classList.contains('itw-host-skip')).length,
-			standIns: sections.reduce((n, el) => n + el.querySelectorAll('.itw-stand-in').length, 0),
-			anyInDocument: doc.querySelectorAll('.itw-wrap-note, .itw-host, .itw-host-skip, .itw-stand-in').length,
+			standIns: sections.reduce((n, el) => n + el.querySelectorAll('.itw-rv-stand-in').length, 0),
+			anyInDocument: doc.querySelectorAll('.itw-wrap-note, .itw-host, .itw-host-skip, .itw-rv-stand-in').length,
 			imageFloat: (() => {
 				const e = doc.querySelector('.markdown-reading-view .image-embed[alt="A tall picture|wrap-right"]');
 				return e ? e.win.getComputedStyle(e).float : null;

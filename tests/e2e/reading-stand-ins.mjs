@@ -61,7 +61,7 @@ export default async ({ page, args, setNote, openNote, setWindowSize, watchError
 					if (Math.abs(e) > Math.abs(worst)) worst = e;
 				}
 				if (Math.abs(worst) > 2) jumps.push({ at: start, px: Math.round(worst * 10) / 10 });
-				const shown = [...sizer.querySelectorAll('.itw-stand-in')].find((s) => getComputedStyle(s).display !== 'none');
+				const shown = [...sizer.querySelectorAll('.itw-rv-stand-in')].find((s) => getComputedStyle(s).display !== 'none');
 				if (shown && !shownBefore) {
 					const copy = shown.querySelector('img').getBoundingClientRect();
 					const copyDocTop = copy.top - scroller.getBoundingClientRect().top + scroller.scrollTop;

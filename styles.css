@@ -78,12 +78,21 @@ p > img:is([alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt
 }
 
 /* The picture scales down with its box rather than overflowing it. The stored size is unchanged. */
-.image-embed:is([alt*="wrap-left"], [alt*="wrap-right"]) img,
+.image-embed:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="|wrap-left"], [alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt$="|wrap-right"]) img,
 .itw-image-line-left > .image-embed img,
 .itw-image-line-right > .image-embed img,
-p > img:is([alt*="wrap-left"], [alt*="wrap-right"]) {
+p > img:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="|wrap-left"], [alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt$="|wrap-right"]) {
 	max-width: 100%;
 	height: auto;
+}
+
+/*
+ * In Reading view the img sits directly in the embed; as an inline box it would leave the line's descent
+ * below the picture (6px at 16px text), making the float taller than the picture. Live Preview already
+ * draws it as a block.
+ */
+.image-embed:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="|wrap-left"], [alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt$="|wrap-right"], [alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt$="|wrap-block"]) > img {
+	display: block;
 }
 
 /* ---------- Top and bottom ---------- */
@@ -99,6 +108,31 @@ p > img:is([alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt
 	margin-block: 0;
 	padding-block: calc(var(--itw-gap, 16px) / 2);
 	clear: both;
+}
+
+/* ---------- Images where wrapping is not offered ---------- */
+
+/*
+ * Inside list items, quotes, callouts, tables and headings an image keeps Obsidian's in-line layout even
+ * if its link has a wrap token: Obsidian measures list and quote indents with the image in the line, so a
+ * float there would pull the first words under the picture. The toolbar and dragging skip these too.
+ */
+.is-live-preview .cm-content > .cm-line:is(.HyperMD-list-line, .HyperMD-quote, .HyperMD-header) .image-embed:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="|wrap-left"], [alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt$="|wrap-right"], [alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt$="|wrap-block"]),
+.cm-content :is(.cm-table-widget, .cm-callout) .image-embed:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="|wrap-left"], [alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt$="|wrap-right"], [alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt$="|wrap-block"]) {
+	float: none;
+	clear: none;
+	display: inline-flex;
+	max-width: 100%;
+	margin: 0;
+	padding: 0;
+}
+.markdown-rendered :is(li, blockquote, .callout, table, h1, h2, h3, h4, h5, h6) :is(.image-embed, img):is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="|wrap-left"], [alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt$="|wrap-right"], [alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt$="|wrap-block"]) {
+	float: none;
+	clear: none;
+	display: inline;
+	max-width: 100%;
+	margin: 0;
+	padding: 0;
 }
 
 /* ---------- The image's own line in Live Preview ---------- */
@@ -131,8 +165,8 @@ p > img:is([alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt
 
 /* ---------- Reading view: the line break after an image glued above its text ---------- */
 
-.image-embed:is([alt*="wrap-left"], [alt*="wrap-right"], [alt*="wrap-block"]) + br,
-p > img:is([alt*="wrap-left"], [alt*="wrap-right"], [alt*="wrap-block"]) + br {
+.image-embed:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="|wrap-left"], [alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt$="|wrap-right"], [alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt$="|wrap-block"]) + br,
+p > img:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="|wrap-left"], [alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt$="|wrap-right"], [alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt$="|wrap-block"]) + br {
 	display: none;
 }
 
@@ -146,8 +180,8 @@ p > img:is([alt*="wrap-left"], [alt*="wrap-right"], [alt*="wrap-block"]) + br {
 /* ---------- Print and PDF ---------- */
 
 @media print {
-	.image-embed:is([alt*="wrap-left"], [alt*="wrap-right"], [alt*="wrap-block"]),
-	p > img:is([alt*="wrap-left"], [alt*="wrap-right"], [alt*="wrap-block"]),
+	.image-embed:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="|wrap-left"], [alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt$="|wrap-right"], [alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt$="|wrap-block"]),
+	p > img:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="|wrap-left"], [alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt$="|wrap-right"], [alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt$="|wrap-block"]),
 	.itw-print-float {
 		break-inside: avoid;
 	}
@@ -252,7 +286,7 @@ p > img:is([alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt
  * its stand-ins: exactly when the sections above it, the image's own among them, are gone. A section that
  * keeps floats to itself (a table) passes that on to the next one.
  */
-.itw-stand-in {
+.itw-rv-stand-in {
 	display: none;
 	box-sizing: border-box;
 	width: var(--itw-stand-in-width);
@@ -262,25 +296,25 @@ p > img:is([alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt
 	pointer-events: none;
 	user-select: none;
 }
-.itw-stand-in-left {
+.itw-rv-stand-in-left {
 	float: left;
 	clear: left;
 	margin-right: var(--itw-stand-in-gap, 0px);
 }
-.itw-stand-in-right {
+.itw-rv-stand-in-right {
 	float: right;
 	clear: right;
 	margin-left: var(--itw-stand-in-gap, 0px);
 }
-.itw-stand-in > img {
+.itw-rv-stand-in > img {
 	display: block;
 	width: 100%;
 	max-width: none;
 	height: auto;
 	margin-top: calc(-1 * var(--itw-stand-in-offset, 0px));
 }
-.markdown-preview-pusher + .itw-host > .itw-stand-in,
-.markdown-preview-pusher + .itw-host-skip + .itw-host > .itw-stand-in {
+.markdown-preview-pusher + .itw-host > .itw-rv-stand-in,
+.markdown-preview-pusher + .itw-host-skip + .itw-host > .itw-rv-stand-in {
 	display: block;
 }
 
@@ -351,6 +385,9 @@ body.itw-dragging * {
 }
 body.itw-dragging {
 	--no-tooltip: true;
+}
+body.itw-dragging .itw-toolbar {
+	visibility: hidden;
 }
 body.itw-dragging > .tooltip {
 	display: none;

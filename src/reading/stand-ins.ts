@@ -23,7 +23,7 @@ import { wrapFromAlt } from './wraps';
 
 export const HOST_CLASS = 'itw-host';
 export const SKIP_HOST_CLASS = 'itw-host-skip';
-export const STAND_IN_CLASS = 'itw-stand-in';
+export const STAND_IN_CLASS = 'itw-rv-stand-in';
 
 interface Keeper {
 	view: MarkdownView;

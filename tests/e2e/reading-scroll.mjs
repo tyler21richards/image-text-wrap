@@ -81,7 +81,7 @@ async function scan({ step, dirs, waitMs }) {
 			const l = lostWraps();
 			if (l.length) {
 				// The plugin's stand-ins (src/reading/stand-ins.ts) keep the wrap when one is showing.
-				const covered = [...sizer.querySelectorAll('.itw-stand-in')].some((s) => getComputedStyle(s).display !== 'none');
+				const covered = [...sizer.querySelectorAll('.itw-rv-stand-in')].some((s) => getComputedStyle(s).display !== 'none');
 				lost.push({ dir, at: Math.round(start), covered, lost: l });
 			}
 		}
