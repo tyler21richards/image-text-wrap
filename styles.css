@@ -153,3 +153,98 @@ p > img:is([alt*="wrap-left"], [alt*="wrap-right"], [alt*="wrap-block"]) + br {
 		break-after: avoid;
 	}
 }
+
+/* ---------- Drag ---------- */
+
+/*
+ * While an image is dragged (.itw-dragging on the window's body): a grabbing cursor everywhere and no
+ * tooltips (Obsidian reads --no-tooltip before showing one; a tooltip already open is hidden too).
+ * The plugin's own body class is removed on every way a drag ends, so the cursor is never left stuck.
+ */
+body.itw-dragging,
+body.itw-dragging * {
+	cursor: grabbing;
+}
+body.itw-dragging {
+	--no-tooltip: true;
+}
+body.itw-dragging > .tooltip {
+	display: none;
+}
+
+/* The image being moved stays where it is, dimmed, until it is dropped. */
+.image-embed.itw-drag-source {
+	opacity: 0.35;
+}
+
+/* A translucent copy of the image beside the pointer. Never takes the pointer. */
+.itw-drag-ghost {
+	position: fixed;
+	left: 0;
+	top: 0;
+	z-index: var(--layer-dragged-item);
+	pointer-events: none;
+	width: var(--itw-ghost-width, 0);
+	height: var(--itw-ghost-height, 0);
+	transform: translate(var(--itw-ghost-x, -9999px), var(--itw-ghost-y, -9999px));
+	opacity: 0.6;
+	border-radius: var(--radius-s);
+	box-shadow: var(--shadow-l);
+	overflow: hidden;
+}
+.itw-drag-ghost img {
+	display: block;
+	width: 100%;
+	height: 100%;
+	object-fit: contain;
+}
+
+/* Where the image will land: a bar across the note column at the start of the target block... */
+.itw-drop-bar,
+.itw-drop-box,
+.itw-drop-label {
+	position: fixed;
+	left: 0;
+	top: 0;
+	z-index: var(--layer-dragged-item);
+	pointer-events: none;
+	box-sizing: border-box;
+}
+.itw-drop-bar {
+	width: var(--itw-drop-width, 0);
+	height: 3px;
+	border-radius: 2px;
+	background-color: var(--interactive-accent);
+	transform: translate(var(--itw-drop-x, 0), calc(var(--itw-drop-y, 0) - 1.5px));
+}
+
+/* ...and, for a wrapped image, a dashed outline on the side it will wrap (or centred, top and bottom). */
+.itw-drop-box {
+	width: var(--itw-drop-width, 0);
+	height: var(--itw-drop-height, 0);
+	border: 2px dashed var(--interactive-accent);
+	border-radius: var(--radius-m);
+	background-color: hsla(var(--interactive-accent-hsl), 0.08);
+	transform: translate(var(--itw-drop-x, 0), var(--itw-drop-y, 0));
+}
+
+.itw-drop-label {
+	padding: 1px var(--size-4-2);
+	border-radius: var(--radius-s);
+	background-color: var(--interactive-accent);
+	color: var(--text-on-accent);
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-medium);
+	white-space: nowrap;
+	/* Above the bar, or inside the top-left corner of the outline. */
+	transform: translate(var(--itw-drop-x, 0), calc(var(--itw-drop-y, 0) - 100% - 4px));
+}
+.itw-drop-label.is-in-box {
+	transform: translate(calc(var(--itw-drop-x, 0) + 8px), calc(var(--itw-drop-y, 0) + 8px));
+}
+
+.itw-drop-bar.is-hidden,
+.itw-drop-box.is-hidden,
+.itw-drop-label.is-hidden {
+	display: none;
+}
