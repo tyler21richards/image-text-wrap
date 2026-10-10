@@ -220,6 +220,7 @@ p > img:is([alt*="wrap-left"], [alt*="wrap-right"], [alt*="wrap-block"]) + br {
 	max-width: none;
 	border-radius: var(--image-radius);
 	pointer-events: none;
+}
 
 /* ---------- Reading view ---------- */
 
@@ -281,6 +282,7 @@ p > img:is([alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt
 .markdown-preview-pusher + .itw-host > .itw-stand-in,
 .markdown-preview-pusher + .itw-host-skip + .itw-host > .itw-stand-in {
 	display: block;
+}
 
 /* ---------- Toolbar ---------- */
 
@@ -334,6 +336,7 @@ p > img:is([alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt
 	background-color: transparent;
 	color: var(--text-faint);
 	cursor: default;
+}
 
 /* ---------- Drag ---------- */
 
