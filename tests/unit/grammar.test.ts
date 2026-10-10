@@ -131,4 +131,115 @@ test('ANY_LAYOUT_TOKEN spots wrap tokens in a note', () => {
 	assert.ok(ANY_LAYOUT_TOKEN.test('x ![[a.png|wrap-left|300]] y'));
 	assert.ok(ANY_LAYOUT_TOKEN.test('![wrap-right](a.png)'));
 	assert.ok(!ANY_LAYOUT_TOKEN.test('we wrap-left text here'));
+	// It also spots segments with spaces, which findImageLinks then reads exactly.
+	assert.ok(ANY_LAYOUT_TOKEN.test('![[a.png| wrap-left |300]]'));
+	assert.ok(ANY_LAYOUT_TOKEN.test('![ wrap-block](a.png)'));
+});
+
+// What Obsidian 1.14.4 draws, measured in Live Preview and Reading view (each case its own paragraph).
+// Where the two views differ, the grammar follows the one that draws no image.
+
+test('links inside inline code, inline math and one-line comments are not images', () => {
+	const none = [
+		'Write `![[a.png|wrap-left|120]]` to embed a picture.',
+		'Double ``![[a.png|120]]`` and ``a ` ![[a.png|120]]``.',
+		'a ```![[a.png|60]]``` b',
+		'a `b`` ![[a.png|60]] c`', // a run of one closes only at a run of one
+		'`unclosed ![[a.png|60]]', // Live Preview shows the rest of the line as code
+		'Comment %%![[a.png|120]]%% and x %% ![[a.png|60]] %% y',
+		'a <!-- ![[a.png|60]] --> b',
+		'a <!-- ![[a.png|60]]', // Live Preview comments out the rest
+		'$![[a.png|60]]$ and $x ![[a.png|60]] y$',
+		'costs $5 and ![[a.png|60]] costs 6$ more',
+		'$a $b ![[a.png|60]] c$', // a "$" after a space does not close; the next one does
+		'a$x ![[a.png|60]] y$ b',
+		'$x ![[a.png|60]] y$a',
+		'a $$![[a.png|60]]$$ b and a $$ ![[a.png|60]] $$ b',
+		'a $$x ![[a.png|60]]', // Live Preview opens a math block there
+		'Markdown: `![alt|120](square.png)` here.',
+	];
+	for (const line of none) assert.deepEqual(findImageLinks(line), [], line);
+});
+
+test('links next to inline code, math and comments are still found', () => {
+	const one = [
+		'a `b` ![[a.png|60]]',
+		'![[a.png|60]] b `c', // the unclosed code starts after the link
+		'\\`![[a.png|60]]\\`', // escaped backticks are text
+		'a `b\\` ![[a.png|60]]', // a backslash does not escape inside code
+		'a ` %% ` ![[a.png|60]] ` %% `',
+		'a %%x%% ![[a.png|60]] %%y%%',
+		'%%%% ![[a.png|60]]',
+		'x %% unclosed ![[a.png|60]]',
+		'costs $5 and ![[a.png|60]] costs $6', // no closing "$" before a digit
+		'$ ![[a.png|60]] $', // no math with a space after the opening "$"
+		'$x ![[a.png|60]] $', // nor before the closing one
+		'$\tx ![[a.png|60]] y$',
+		'\\$x ![[a.png|60]] y$',
+		'a $x$ ![[a.png|60]] $y$',
+		'$x$![[a.png|60]]$y$',
+		'a $x ![[a.png|60]]',
+		'`$` ![[a.png|60]] `$`',
+		'![[a.png|a $b|60]] c$', // math cannot start inside a link
+		'\\\\![[a.png|60]]', // an escaped backslash, then a link
+	];
+	for (const line of one) assert.equal(findImageLinks(line).length, 1, line);
+	assert.equal(findImageLinks('\\![[a.png|60]]').length, 0);
+});
+
+test('markdown alt text ends at the first "]" and has no unescaped "["', () => {
+	for (const text of [
+		'![a [b] c|wrap-right](images/tall.png)',
+		'![a \\[b\\] c|wrap-right](images/tall.png)',
+		'![a \\] c|wrap-right](images/tall.png)',
+		'![a [b c|wrap-right](images/tall.png)',
+		'![a [b]|wrap-right](images/tall.png)',
+		'![[b]|wrap-right](images/tall.png)',
+		'![a ]b|wrap-right](images/tall.png)',
+		'![a `]` b|wrap-right](images/tall.png)',
+	]) {
+		assert.equal(parseImageLinkAt(text, 0), null, text);
+		assert.deepEqual(findImageLinks(text), [], text);
+	}
+	assert.deepEqual(parseImageLinkAt('![a \\[b c|wrap-right](x.png)', 0)?.segments, ['a \\[b c', 'wrap-right']);
+	assert.equal(parseImageLinkAt('![a `b` c|wrap-right](x.png)', 0)?.layout.wrap, 'right');
+	// Wikilinks keep brackets in the caption.
+	assert.equal(parseImageLinkAt('![[x.png|a [b] c|wrap-right]]', 0)?.layout.wrap, 'right');
+	assert.equal(parseImageLinkAt('![[x.png|a ]b|wrap-right]]', 0)?.layout.wrap, 'right');
+	assert.equal(apply('![a \\[b c|300](x.png)', L('left')), '![a \\[b c|wrap-left|300](x.png)');
+});
+
+test('a token counts only as styles.css sees it in the alt text', () => {
+	const wrapOf = (text: string) => parseImageLinkAt(text, 0)!.layout.wrap;
+	// Obsidian trims the alt text: spaces at its start, and at its end when no size follows.
+	assert.equal(wrapOf('![[x.png| wrap-left|60]]'), 'left');
+	assert.equal(wrapOf('![[x.png|\twrap-left|60]]'), 'left');
+	assert.equal(wrapOf('![[x.png|wrap-left ]]'), 'left');
+	assert.equal(wrapOf('![[x.png|wrap-left| 60]]'), 'left');
+	assert.equal(wrapOf('![[x.png|wrap-left|60 ]]'), 'left');
+	assert.equal(wrapOf('![ wrap-left|60](x.png)'), 'left');
+	assert.equal(wrapOf('![wrap-left ](x.png)'), 'left');
+	assert.equal(wrapOf('![[x.png||wrap-right]]'), 'right');
+	// Any other space stays in the alt text, and Live Preview draws the image in line.
+	assert.equal(wrapOf('![[x.png|wrap-left |60]]'), 'none');
+	assert.equal(wrapOf('![[x.png| wrap-left |60]]'), 'none');
+	assert.equal(wrapOf('![[x.png|A caption | wrap-left|90]]'), 'none');
+	assert.equal(wrapOf('![[x.png|A caption| wrap-left]]'), 'none');
+	assert.equal(wrapOf('![wrap-left |60](x.png)'), 'none');
+	assert.equal(wrapOf('![[x.png|Wrap-Left|60]]'), 'none');
+	assert.equal(parseImageLinkAt('![[x.png|wrap-left|gap-8 |60]]', 0)!.layout.gap, 16);
+	assert.equal(parseImageLinkAt('![[x.png|wrap-left| gap-8]]', 0)!.layout.gap, 16);
+	assert.equal(parseImageLinkAt('![[x.png|wrap-left|gap-8 ]]', 0)!.layout.gap, 8);
+});
+
+test('segments with spaces that are not tokens stay where they are', () => {
+	assert.equal(apply('![[x.png| wrap-left |60]]', L('right')), '![[x.png| wrap-left |wrap-right|60]]');
+	assert.equal(
+		apply('![[x.png|A caption | wrap-left|wrap-left|90]]', L('none')),
+		'![[x.png|A caption | wrap-left|90]]',
+	);
+	// Tokens Obsidian trims into place are replaced like any other.
+	assert.equal(apply('![[x.png| wrap-left|60]]', L('right')), '![[x.png|wrap-right|60]]');
+	assert.equal(apply('![[x.png|cap|wrap-left ]]', L('none')), '![[x.png|cap]]');
+	assert.equal(apply('![ wrap-block|60](x.png)', L('left', 8)), '![wrap-left|gap-8|60](x.png)');
 });

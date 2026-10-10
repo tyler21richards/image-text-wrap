@@ -199,6 +199,36 @@ export function scanLines(lines: readonly string[]): LineInfo[] {
 	return out;
 }
 
+const FENCE_MARKS = /```|~~~|\$\$|%%|<!--|-->/;
+
+/**
+ * True when a line can open or close code, math or a comment, or frontmatter in a note that starts
+ * with "---". Changing such a line can change how every later line of the note is read.
+ */
+export function opensOrCloses(text: string, frontmatter: boolean): boolean {
+	if (FENCE_MARKS.test(text)) return true;
+	const t = text.trimEnd();
+	return frontmatter && (t === '---' || t === '...');
+}
+
+/**
+ * True for a line that scanLines reads as a plain paragraph line wherever it stands (or as a line
+ * inside code, math, a comment or frontmatter), and that opens, closes and continues nothing. Changing
+ * one such line into another never changes how scanLines reads any other line, so a caller can skip
+ * re-scanning the note for that edit.
+ */
+export function isPlainLine(text: string): boolean {
+	if (isBlank(text) || /^[ \t]/.test(text) || text.includes('|') || opensOrCloses(text, true)) return false;
+	return !(
+		HEADING.test(text) ||
+		QUOTE.test(text) ||
+		LIST.test(text) ||
+		HR.test(text) ||
+		SETEXT.test(text) ||
+		TABLE_DELIMITER.test(text)
+	);
+}
+
 /**
  * Lines in front of which an image may be dropped: every top-level block start, plus
  * `lines.length` for the end of the note (when the note does not end inside code, math or a comment).

@@ -47,6 +47,24 @@ test('flags contexts that are display only in v1', () => {
 	}
 });
 
+test('a link inside inline code, inline math or a one-line comment is not found', () => {
+	for (const text of [
+		'Write `![[a.png|120]]` to embed a picture.',
+		'Double ``![[a.png|120]]`` here.',
+		'Comment %%![[a.png|120]]%% here.',
+		'Math $![[a.png|120]]$ here.',
+		'Markdown `![alt|120](a.png)` here.',
+	]) {
+		const d = doc(text);
+		const pos = text.indexOf('![');
+		assert.equal(locateAt(d, pos), null, text);
+		assert.equal(locateAt(d, pos + 4), null, text);
+	}
+	// The real image beside a code span is still found.
+	const d = doc('Real `code` then ![[a.png|120]] here.');
+	assert.equal(locateAt(d, d.toString().indexOf('![['))?.link.target, 'a.png');
+});
+
 test('returns null where there is no image link', () => {
 	assert.equal(locateAt(doc('plain text'), 3), null);
 	assert.equal(locateAt(doc('x'), 99), null);

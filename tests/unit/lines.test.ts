@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { scanLines, dropTargets } from '../../src/markdown/lines.ts';
+import { scanLines, dropTargets, isPlainLine, opensOrCloses } from '../../src/markdown/lines.ts';
+import { LINE_POOL, pick, random } from './markdown-samples.ts';
 
 const scan = (text: string) => scanLines(text.split('\n'));
 const targets = (text: string) => dropTargets(text.split('\n'));
@@ -89,4 +90,62 @@ test('inline $$ math does not open a block', () => {
 	const info = scan('$$x$$ is inline\nnext');
 	assert.equal(info[0]!.context, 'text');
 	assert.equal(info[1]!.context, 'text');
+});
+
+test('plain lines: only ordinary text', () => {
+	const plain = ['Text.', 'x', '![wrap-right](x.png)', 'Text ![[b.png]] and more', '...more', 'Dollar $5 and 5%'];
+	for (const line of plain) assert.equal(isPlainLine(line), true, line);
+	const notPlain = [
+		'',
+		'   ',
+		'---',
+		'...',
+		'```js',
+		'~~~',
+		'$$',
+		'%%',
+		'<!--',
+		'-->',
+		'| a | b |',
+		':-:',
+		'# Heading',
+		'> quote',
+		'- item',
+		'1. item',
+		'  indented',
+		'***',
+		'===',
+		'--',
+		'![[a.png|wrap-left|60]]', // its pipes could make it a table row
+	];
+	for (const line of notPlain) assert.equal(isPlainLine(line), false, line);
+});
+
+test('lines that can open or close code, math, comments or frontmatter', () => {
+	for (const line of ['```js', '  ~~~', '$$', 'a $$x$$ b', '%%', 'text %% c %%', '<!--', '-->']) {
+		assert.equal(opensOrCloses(line, false), true, line);
+	}
+	assert.equal(opensOrCloses('---', false), false);
+	assert.equal(opensOrCloses('---', true), true);
+	assert.equal(opensOrCloses('... ', true), true);
+	assert.equal(opensOrCloses('Text with `code` and $x$.', true), false);
+});
+
+test('changing a plain line into another never changes how the other lines are read', () => {
+	const next = random(7);
+	const plain = LINE_POOL.filter(isPlainLine);
+	for (let round = 0; round < 3000; round++) {
+		const lines = Array.from({ length: 1 + Math.floor(next() * 12) }, () => pick(next, LINE_POOL));
+		const at = Math.floor(next() * lines.length);
+		if (!isPlainLine(lines[at]!)) lines[at] = pick(next, plain);
+		const changed = lines.slice();
+		changed[at] = pick(next, plain);
+		const before = scanLines(lines);
+		const after = scanLines(changed);
+		const what = `${JSON.stringify(lines)}: line ${at} becomes ${JSON.stringify(changed[at])}`;
+		before.forEach((info, n) => {
+			if (n !== at) assert.deepEqual(after[n], info, what);
+		});
+		assert.equal(after[at]!.context, before[at]!.context, what);
+	}
 });

@@ -69,6 +69,18 @@ test('commands pick the image link under the cursor, else the only one on the li
 	assert.equal(pickLinkAtCursor('| x | ![[t.png\\|60]] |', 8, true)?.target, 't.png');
 });
 
+test('commands never pick a link inside inline code, inline math or a one-line comment', () => {
+	const line = 'Write `![[square.png|120]]` to embed a picture.';
+	assert.equal(pickLinkAtCursor(line, 13), null); // inside the code
+	assert.equal(pickLinkAtCursor(line, 34), null); // elsewhere on the line
+	assert.equal(pickLinkAtCursor('Double: ``![[square.png|120]]`` here.', 14), null);
+	assert.equal(pickLinkAtCursor('Comment: %%![[square.png|120]]%% here.', 14), null);
+	assert.equal(pickLinkAtCursor('Math: $![[square.png|120]]$ here.', 10), null);
+	assert.equal(pickLinkAtCursor('Markdown: `![alt|120](square.png)` here.', 14), null);
+	// The real image on a line with code is the only link, wherever the cursor is.
+	assert.equal(pickLinkAtCursor('Real `code` then ![[square.png|120]] here.', 2)?.target, 'square.png');
+});
+
 test('recognises a change that only rewrote image links (an undo of a layout change)', () => {
 	assert.equal(onlyImageLinksChanged('![[a.png|300]]', '![[a.png|wrap-left|300]]'), true);
 	assert.equal(onlyImageLinksChanged('Text ![x|wrap-right](u.png) end', 'Text ![x](u.png) end'), true);
