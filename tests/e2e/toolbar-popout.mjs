@@ -34,8 +34,15 @@ export default probe(async (h, check) => {
 	await h.setWindowSize(page, 1280, 900);
 	await freshNote(page, h, 'Fixture.md');
 
-	// Pop-out window.
+	// Pop-out window. The plugin's own cleanup list and child components are counted around it: whatever
+	// it registers for the window must be released when the window closes.
 	const pagesBefore = new Set(page.context().pages());
+	const owned = () =>
+		page.evaluate(() => {
+			const plugin = app.plugins.plugins['image-text-wrap'];
+			return { events: plugin._events.length, children: plugin._children.length };
+		});
+	const ownedBefore = await owned();
 	await page.evaluate(async () => {
 		const leaf = app.workspace.openPopoutLeaf({ size: { width: 1000, height: 800 } });
 		await leaf.openFile(app.vault.getAbstractFileByPath('Fixture.md'), { state: { mode: 'source', source: false }, active: true });
@@ -84,6 +91,32 @@ export default probe(async (h, check) => {
 			await pop.keyboard.press('Meta+z');
 			await sleep(500);
 			check('pop-out: Cmd+Z in the pop-out undoes it', (await popText()) === before, diffLines(before, await popText()));
+
+			// Esc with the pointer resting on a button: its tooltip goes with the toolbar in the pop-out too.
+			ps = await windowState(pop);
+			const block = ps.buttons.find((b) => b.label === 'Top and bottom');
+			await pop.mouse.move(block.rect.left + 3, block.rect.top - 20, { steps: 3 });
+			await sleep(200);
+			await pop.mouse.move((block.rect.left + block.rect.right) / 2, (block.rect.top + block.rect.bottom) / 2, { steps: 5 });
+			await sleep(1300);
+			const popTips = () => pop.evaluate(() => [...document.querySelectorAll('.tooltip')].map((t) => t.textContent));
+			const tipBefore = await popTips();
+			await pop.keyboard.press('Escape');
+			await sleep(300);
+			const tipAfter = await popTips();
+			check('pop-out: Esc with the pointer on a button hides the toolbar and its tooltip', tipBefore.join() === 'Top and bottom' && tipAfter.length === 0 && !(await windowState(pop)).visible, { tipBefore, tipAfter });
+			await pop.mouse.move(target.x, target.y + 120, { steps: 3 });
+
+			// A real right-click in the pop-out: the layout entries are in Obsidian's menu there too.
+			const nativeBefore = await page.evaluate(() => app.vault.getConfig('nativeMenus'));
+			await page.evaluate(() => app.vault.setConfig('nativeMenus', false));
+			await pop.mouse.click(target.x - 22, target.y, { button: 'right' });
+			await sleep(500);
+			const popMenu = await pop.evaluate(() => [...document.querySelectorAll('.menu .menu-item-title')].map((t) => t.textContent));
+			await pop.keyboard.press('Escape');
+			await sleep(300);
+			await page.evaluate((v) => app.vault.setConfig('nativeMenus', v), nativeBefore);
+			check('pop-out: right-click menu has the layout entries, once', ['In line with text', 'Wrap text left', 'Wrap text right', 'Top and bottom'].every((t) => popMenu.filter((m) => m === t).length === 1), popMenu);
 		}
 		await page.evaluate(() => window.__itwPopout.detach());
 		await sleep(800);
@@ -95,6 +128,17 @@ export default probe(async (h, check) => {
 		await sleep(1000);
 		const leaves = await page.evaluate(() => (app.workspace.floatingSplit?.children ?? []).length);
 		check('pop-out window closed', pop.isClosed() && leaves === 0, { closedByObsidian: !orphan, closedAfterDestroy: pop.isClosed(), floatingWindowsLeft: leaves });
+		// A window kept open by the DevTools connection can take focus after Obsidian let go of it; Obsidian's
+		// own focus handler makes the main window the active one again (notices and menus go there).
+		await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+		const ownedAfter = await owned();
+		check('closing the pop-out releases what the plugin registered for it', JSON.stringify(ownedAfter) === JSON.stringify(ownedBefore), { before: ownedBefore, after: ownedAfter });
+		// (Whether the closed window's document is then garbage-collected is not checked here: the editor code
+		// Obsidian ships can keep the last closed window alive for a while by itself. Heap snapshots on 1.14.4
+		// showed two such paths, neither through this plugin: CodeMirror's scratch Range for measuring text,
+		// last used in the pop-out; and a CodeMirror widget-buffer image made with the main window's document,
+		// moved into the pop-out, still listed by the main document's MediaQueryMatcher.)
+		await page.evaluate(() => delete window.__itwPopout);
 	}
 	const after = await page.evaluate(() => document.querySelectorAll('.itw-toolbar').length);
 	check('closing the pop-out leaves one toolbar element (main window only)', after === 1, { mainWindowToolbars: after });

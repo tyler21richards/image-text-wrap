@@ -33,6 +33,14 @@ export interface Placement {
 	where: PlaceWhere;
 }
 
+/**
+ * Whether the toolbar stays where it was. Placements are whole pixels, so a re-measure that finds the
+ * picture where it was gives the same spot, and anything open under the toolbar can stay put.
+ */
+export function samePlace(a: Placement, b: Placement): boolean {
+	return a.left === b.left && a.top === b.top;
+}
+
 function overlaps(a: Box, b: Box): boolean {
 	return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
 }
