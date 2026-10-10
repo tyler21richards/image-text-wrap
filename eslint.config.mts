@@ -4,6 +4,11 @@ import { globalIgnores, defineConfig } from 'eslint/config';
 
 export default defineConfig(
 	globalIgnores([
+		'.claude',
+		'.e2e',
+		'scripts',
+		'tests',
+		'test-vault',
 		'node_modules',
 		'dist',
 		'esbuild.config.mjs',

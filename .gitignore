@@ -6,3 +6,4 @@ test-vault/.obsidian/workspace*.json
 test-vault/.obsidian/plugins/image-text-wrap/
 test-artifacts/
 .e2e/
+.claude/
