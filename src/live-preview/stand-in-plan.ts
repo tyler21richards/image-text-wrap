@@ -1,5 +1,6 @@
 // Plans stand-ins for wrapped images whose own line CodeMirror is not drawing (brief 7 item 6).
-// Pure: works on numbers measured elsewhere, no DOM and no Obsidian imports, so it is unit tested.
+// Pure: works on numbers measured elsewhere and on CodeMirror documents, no DOM and no Obsidian
+// imports, so it is unit tested.
 //
 // CodeMirror draws only the part of a note near the window. When a wrapped image's line lies above
 // the first drawn line but the picture is tall enough to reach into the drawn part, the lines beside
@@ -11,6 +12,7 @@
 // (src/layout/wrapGaps.ts: planProxy, liveProxy, stackProxies, standInAnchorTop), MIT,
 // (c) 2026 Yi-luo-hua.
 
+import type { ChangeDesc, Text } from '@codemirror/state';
 import { findImageLinks, isSizeSegment, type ImageLink } from '../grammar';
 import { scanLines } from '../markdown/lines';
 
@@ -38,6 +40,7 @@ export function findFloatAnchors(lines: readonly string[]): FloatAnchor[] {
 	const out: FloatAnchor[] = [];
 	let infos: ReturnType<typeof scanLines> | null = null;
 	lines.forEach((text, line) => {
+		// Every anchor line holds one of these; editKeepsAnchors relies on that.
 		if (!text.includes('wrap-left') && !text.includes('wrap-right')) return;
 		const links = findImageLinks(text);
 		if (links.length !== 1) return;
@@ -59,6 +62,114 @@ export function findFloatAnchors(lines: readonly string[]): FloatAnchor[] {
 		});
 	});
 	return out;
+}
+
+/** Text that could open or close code, math, a comment or a table, or be a wrapped image line. */
+const MAY_CHANGE_CONTEXT = /wrap-left|wrap-right|\||`{3}|~{3}|\$\$|%%|<!--|-->/i;
+/** A frontmatter fence ("---" or "..."). */
+const FRONTMATTER_FENCE = /^(?:---|\.\.\.)\s*$/;
+/** A table's delimiter row without pipes ("---", ":-:"): the line above it, if it has a pipe, is a table's header. */
+const BARE_DELIMITER = /^\s*:?-+:?\s*$/;
+/** Lines that end a table in scanLines: blank lines, headings, rules, quotes and list items. */
+const MAY_END_TABLE = /^(?:\s*$|[#>*+_-]|\d| {1,3}>)/;
+
+/** Edited lines of a note, as they were or as they are, with the unchanged line on each side. */
+export interface EditedLines {
+	lines: readonly string[];
+	/** The line before them, unless they start the note. */
+	above?: string;
+	/** The line after them, unless they end the note. */
+	below?: string;
+}
+
+/**
+ * Whether an edit cannot have changed which lines of the note are float anchors, nor any anchor's
+ * text, so the anchors found before it only move. `before` and `after` are the edited lines as they
+ * were and as they are.
+ *
+ * An anchor's line depends on its own text, on the next line (a table's delimiter row makes a line
+ * with a pipe a table's header), on code, math, comments and frontmatter opened above it, and on
+ * whether a table above it has ended. So no edited line may hold, or have held, a wrap, a pipe, a
+ * delimiter row or a code, math, comment or frontmatter fence, the edit may not touch the note's
+ * first line (where frontmatter starts), and it must leave the question "has a table ended by here"
+ * as it was: both sides hold a blank line, which ends any table, or neither holds a line that could
+ * end one (the unchanged lines around count too). The lines around may be anchors themselves: the
+ * one above only depends on the edit through a delimiter row, the one below through a table's end.
+ */
+export function editKeepsAnchors(before: EditedLines, after: EditedLines, touchesFirstLine: boolean): boolean {
+	if (touchesFirstLine) return false;
+	const risky = (line: string) => MAY_CHANGE_CONTEXT.test(line) || FRONTMATTER_FENCE.test(line) || BARE_DELIMITER.test(line);
+	if (before.lines.some(risky) || after.lines.some(risky)) return false;
+	const all = (e: EditedLines) => [e.above, ...e.lines, e.below].filter((line): line is string => line !== undefined);
+	const blank = (e: EditedLines) => all(e).some((line) => line.trim() === '');
+	const mayEnd = (e: EditedLines) => all(e).some((line) => MAY_END_TABLE.test(line));
+	return (blank(before) && blank(after)) || (!mayEnd(before) && !mayEnd(after));
+}
+
+/** A float anchor with document positions. */
+export interface DocAnchor extends FloatAnchor {
+	lineFrom: number;
+	lineTo: number;
+	/** Document position of the link: where CodeMirror puts the image widget. */
+	pos: number;
+}
+
+/** The float anchors of a document. */
+export function docAnchors(doc: Text): DocAnchor[] {
+	let any = false;
+	for (const iter = doc.iterLines(); !iter.next().done; ) {
+		if (iter.value.includes('wrap-left') || iter.value.includes('wrap-right')) {
+			any = true;
+			break;
+		}
+	}
+	if (!any) return [];
+	return findFloatAnchors(doc.toString().split('\n')).map((found) => {
+		const line = doc.line(found.line + 1);
+		return { ...found, lineFrom: line.from, lineTo: line.to, pos: line.from + found.linkFrom };
+	});
+}
+
+/** Edits with more separate changes than this (a replace-all) are left to a new scan. */
+const MAX_MOVED_CHANGES = 8;
+
+/** The lines `from`..`to` touch, with the line on each side. */
+function editedLines(doc: Text, from: number, to: number): EditedLines {
+	const first = doc.lineAt(from).number;
+	const last = doc.lineAt(to).number;
+	const lines: string[] = [];
+	for (let n = first; n <= last; n++) lines.push(doc.line(n).text);
+	return {
+		lines,
+		above: first > 1 ? doc.line(first - 1).text : undefined,
+		below: last < doc.lines ? doc.line(last + 1).text : undefined,
+	};
+}
+
+/**
+ * The float anchors of `doc` from those of `startDoc` (`before`), when the edit between them
+ * (`changes`) cannot have changed any (editKeepsAnchors): the same lines, moved. Only the edited lines
+ * are read. Null when the note has to be scanned again (docAnchors).
+ */
+export function moveAnchors(before: readonly DocAnchor[], startDoc: Text, changes: ChangeDesc, doc: Text): DocAnchor[] | null {
+	let ranges = 0;
+	let kept = true;
+	changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+		if (!kept) return;
+		if (++ranges > MAX_MOVED_CHANGES) {
+			kept = false;
+			return;
+		}
+		const was = editedLines(startDoc, fromA, toA);
+		const now = editedLines(doc, fromB, toB);
+		kept = editKeepsAnchors(was, now, was.above === undefined || now.above === undefined);
+	});
+	if (!kept) return null;
+	// Each anchor's own line is unchanged, so only its position moves.
+	return before.map((anchor) => {
+		const line = doc.lineAt(changes.mapPos(anchor.lineFrom));
+		return { ...anchor, line: line.number - 1, lineFrom: line.from, lineTo: line.to, pos: line.from + anchor.linkFrom };
+	});
 }
 
 /** The size segment of a link ("300" or "300x200"), if it has one. */

@@ -21,19 +21,33 @@
 // - CodeMirror also draws the lines holding the cursor. An image there is drawn for real, so it gets
 //   no stand-in, and stand-ins left on such lines go.
 // Here the copy is a plain picture rather than an interactive layout: clicking it does nothing.
-import { StateEffect, StateField, type ChangeDesc, type Extension, type Range, type Text } from '@codemirror/state';
+// Measured here, in Obsidian 1.14:
+// - A stand-in update that follows a scroll request (jump to a line or heading, going back in
+//   history) carries the request again, or the target ends up away from where it was asked to be.
+// - Only links Obsidian's own parser reads as images get a stand-in; it draws no picture for others.
+import { syntaxTree, syntaxTreeAvailable } from '@codemirror/language';
+import {
+	StateEffect,
+	StateField,
+	type ChangeDesc,
+	type EditorState,
+	type Extension,
+	type Range,
+	type Text,
+} from '@codemirror/state';
 import { Decoration, type DecorationSet, EditorView, ViewPlugin, WidgetType, type ViewUpdate } from '@codemirror/view';
 import { editorInfoField, editorLivePreviewField } from 'obsidian';
 import type ImageTextWrapPlugin from '../main';
 import {
+	docAnchors,
 	estimateBox,
-	findFloatAnchors,
 	linkSize,
+	moveAnchors,
 	planStandIn,
 	sameBox,
 	stackStandIns,
 	standInAnchorTop,
-	type FloatAnchor,
+	type DocAnchor,
 	type FloatBox,
 	type FloatSide,
 	type StandInPlan,
@@ -44,38 +58,62 @@ export const STAND_IN_CLASS = 'itw-stand-in';
 /** Stand-in updates sent within one frame before the next waits for the following frame. */
 const MAX_SENDS_PER_FRAME = 3;
 
-/** A wrapped image line, with document positions. */
-interface Anchor extends FloatAnchor {
-	lineFrom: number;
-	lineTo: number;
-	/** Document position of the link: where CodeMirror puts the image widget. */
-	pos: number;
-}
+const anchorCache = new WeakMap<Text, DocAnchor[]>();
 
-const anchorCache = new WeakMap<Text, Anchor[]>();
-
-/** The wrapped image lines of a document, computed once per document version. */
-function anchorsOf(doc: Text): Anchor[] {
+/** The wrapped image lines of a document, found once per document version. */
+function anchorsOf(doc: Text): DocAnchor[] {
 	let anchors = anchorCache.get(doc);
-	if (anchors) return anchors;
-	anchors = [];
-	let any = false;
-	for (const iter = doc.iterLines(); !iter.next().done; ) {
-		if (iter.value.includes('wrap-left') || iter.value.includes('wrap-right')) {
-			any = true;
-			break;
-		}
+	if (!anchors) {
+		anchors = docAnchors(doc);
+		anchorCache.set(doc, anchors);
 	}
-	if (any) {
-		const lines = doc.toString().split('\n');
-		for (const found of findFloatAnchors(lines)) {
-			const line = doc.line(found.line + 1);
-			anchors.push({ ...found, lineFrom: line.from, lineTo: line.to, pos: line.from + found.linkFrom });
-		}
-	}
-	anchorCache.set(doc, anchors);
 	return anchors;
 }
+
+/**
+ * The wrapped image lines after an edit: those before it, moved, when the edit cannot have changed
+ * any (typing in ordinary text), so the note is not scanned on every keystroke; else found again.
+ */
+function anchorsAfter(update: ViewUpdate): DocAnchor[] {
+	const doc = update.state.doc;
+	const before = anchorCache.get(update.startState.doc);
+	const moved = before && !anchorCache.has(doc) ? moveAnchors(before, update.startState.doc, update.changes, doc) : null;
+	if (moved) anchorCache.set(doc, moved);
+	return anchorsOf(doc);
+}
+
+/**
+ * Whether Obsidian's own parser reads the link at `pos` as an image, so Live Preview draws one there.
+ * It does not always agree with the link grammar ("![a [b] c|wrap-right](x.png)" is plain text to it),
+ * and a stand-in for a picture that is never drawn would show a copy nobody can see in the note.
+ * Where the note is not parsed yet, the link grammar decides.
+ */
+function drawnAsImage(state: EditorState, pos: number): boolean {
+	if (!syntaxTreeAvailable(state, pos + 1)) return true;
+	const tokens = syntaxTree(state).resolveInner(pos, 1).name.split('_');
+	return tokens.includes('image-marker') || tokens.includes('formatting-embed');
+}
+
+/** The type of CodeMirror's scroll requests (scrollIntoView, scrollSnapshot), which it does not export. */
+const SCROLL_REQUEST: unknown = (EditorView.scrollIntoView(0) as unknown as { type?: unknown }).type;
+
+function isScrollRequest(effect: StateEffect<unknown>): boolean {
+	return SCROLL_REQUEST !== undefined && (effect as unknown as { type?: unknown }).type === SCROLL_REQUEST;
+}
+
+/** A scroll request the stand-ins may still move away from: an effect, or the selection's own scroll. */
+interface PendingScroll {
+	effect: StateEffect<unknown> | null;
+	/** When it was made (Date.now()). */
+	at: number;
+	/** Asked for once more after lines changed height (StandInGuard.update). */
+	again: boolean;
+}
+
+/** Frames after a scroll request during which stand-in updates carry it again (see StandInGuard.place). */
+const SCROLL_FOLLOW_FRAMES = 3;
+/** A safety net for those frames: never carry a request older than this, in ms. */
+const SCROLL_FOLLOW_MS = 500;
 
 /** What was measured on a drawn image, kept while its line is not drawn. */
 interface Measured {
@@ -248,6 +286,9 @@ class StandInGuard {
 	private measureSerial = 0;
 	private measureQueued = false;
 	private repairs = 0;
+	private pendingScroll: PendingScroll | null = null;
+	/** Scroll requests this guard sent itself, which are not new requests. */
+	private readonly ownScrolls = new WeakSet<StateEffect<unknown>>();
 	private readonly resize: ResizeObserver;
 	private readonly observed = new Set<HTMLElement>();
 
@@ -269,8 +310,13 @@ class StandInGuard {
 		if (update.docChanged) {
 			// Another note loaded into this editor replaces everything: nothing measured applies.
 			if (update.changes.touchesRange(0, update.startState.doc.length) === 'cover') this.sizes.clear();
-			else this.mapSizes(update.changes, update.state.doc);
+			else {
+				anchorsAfter(update);
+				this.mapSizes(update.changes, update.state.doc);
+			}
 		}
+		this.noteScroll(update);
+		this.followScroll(update);
 		const modeChanged = update.startState.field(editorLivePreviewField, false) !== update.state.field(editorLivePreviewField, false);
 		// Our own stand-ins change decorations on drawn lines, so CodeMirror estimates those lines again
 		// and may pick another viewport within the same update. Planning again from that would send new
@@ -301,6 +347,7 @@ class StandInGuard {
 	destroy(): void {
 		this.destroyed = true;
 		this.serial++;
+		this.pendingScroll = null;
 		this.resize.disconnect();
 		this.observed.clear();
 		liveGuards.delete(this);
@@ -308,6 +355,60 @@ class StandInGuard {
 
 	private livePreview(): boolean {
 		return this.view.state.field(editorLivePreviewField, false) === true;
+	}
+
+	/**
+	 * Remembers a scroll request (jump to a line or heading, search, going back in history) for a few
+	 * frames. CodeMirror scrolls to it once, in its next measure, and then keeps its own scroll anchor
+	 * still instead. When that scroll draws lines beside a picture whose own line is no longer drawn,
+	 * their stand-in only follows in another transaction, the text beside it wraps again and grows,
+	 * and the target ends up off the window's top (measured: 22px above it, and 168px after going
+	 * back in history). So the stand-in update carries the request again (place).
+	 */
+	private noteScroll(update: ViewUpdate): void {
+		for (const tr of update.transactions) {
+			if (this.pendingScroll?.effect && !tr.changes.empty) {
+				// Kept as the same object: its frame count (below) follows it.
+				const effect = this.pendingScroll.effect.map(tr.changes);
+				if (effect) this.pendingScroll.effect = effect;
+				else this.pendingScroll = null;
+			}
+			// Our own updates may carry one again; that is not a new request.
+			if (tr.effects.some((e) => e.is(setStandIns) || this.ownScrolls.has(e))) continue;
+			const effect = tr.effects.filter(isScrollRequest).pop();
+			if (!effect && !tr.scrollIntoView) continue;
+			const pending: PendingScroll = { effect: effect ?? null, at: Date.now(), again: false };
+			this.pendingScroll = pending;
+			const win = this.view.dom.win;
+			let frames = SCROLL_FOLLOW_FRAMES;
+			const tick = () => {
+				if (this.pendingScroll !== pending) return;
+				if (--frames <= 0) this.pendingScroll = null;
+				else win.requestAnimationFrame(tick);
+			};
+			win.requestAnimationFrame(tick);
+		}
+	}
+
+	/**
+	 * Asks once more for a scroll request when CodeMirror measured lines of other heights after it
+	 * scrolled to it. CodeMirror keeps no scroll anchor in the measure that applied the request, so
+	 * the target moves by as much as the lines above it changed (measured on the fixture: Obsidian drew
+	 * the note's first line, a heading, apart and 23px shorter in that measure, and the line jumped to
+	 * stayed 21px above the window's top; with the plugin off the same change came a frame later and
+	 * CodeMirror kept the line in place).
+	 */
+	private followScroll(update: ViewUpdate): void {
+		const scroll = this.pendingScroll;
+		if (!scroll?.effect || scroll.again || !update.heightChanged || update.transactions.length > 0) return;
+		if (Date.now() - scroll.at > SCROLL_FOLLOW_MS) return;
+		scroll.again = true;
+		const doc = update.state.doc;
+		queueMicrotask(() => {
+			if (this.destroyed || this.pendingScroll !== scroll || !scroll.effect || this.view.state.doc !== doc) return;
+			this.ownScrolls.add(scroll.effect);
+			this.view.dispatch({ effects: scroll.effect });
+		});
 	}
 
 	// The link start: typing in front of the picture leaves the size behind (it is measured again, as
@@ -499,7 +600,7 @@ class StandInGuard {
 	}
 
 	/** The picture's float and URL: as measured, or estimated for one never drawn here. */
-	private floatFor(anchor: Anchor): { box: FloatBox; src: string } | null {
+	private floatFor(anchor: DocAnchor): { box: FloatBox; src: string } | null {
 		const m = this.sizes.get(anchor.pos);
 		const maxPercent = this.plugin.settings.maxWrapWidth;
 		const metrics = this.metrics;
@@ -524,7 +625,7 @@ class StandInGuard {
 	}
 
 	/** The URL Obsidian would show the picture from. */
-	private resolve(anchor: Anchor): string | null {
+	private resolve(anchor: DocAnchor): string | null {
 		let target = anchor.link.target.trim().replace(/^<|>$/g, '');
 		if (/^(https?:|data:|app:|file:)/i.test(target)) return target;
 		if (anchor.link.kind === 'markdown') {
@@ -569,7 +670,13 @@ class StandInGuard {
 			if (this.destroyed || this.serial !== serial || this.view.state.doc !== doc) return;
 			this.sentKey = key;
 			this.countSend();
-			this.view.dispatch({ effects: setStandIns.of(Decoration.set(ranges, true)) });
+			// A scroll request from just before: the text re-wraps beside the new stand-ins, so CodeMirror
+			// scrolls to it again once it has measured them (noteScroll).
+			const scroll = this.pendingScroll && Date.now() - this.pendingScroll.at <= SCROLL_FOLLOW_MS ? this.pendingScroll : null;
+			this.view.dispatch({
+				effects: scroll?.effect ? [setStandIns.of(Decoration.set(ranges, true)), scroll.effect] : setStandIns.of(Decoration.set(ranges, true)),
+				scrollIntoView: !!scroll && !scroll.effect,
+			});
 		};
 		// A safety net under the rule in update(): past a few sends in one frame, wait for the next.
 		if (this.sentThisFrame < MAX_SENDS_PER_FRAME) queueMicrotask(send);
@@ -590,11 +697,12 @@ class StandInGuard {
 		const doc = view.state.doc;
 		const viewportFrom = view.viewport.from;
 		if (viewportFrom === 0) return null;
-		const planned: Array<{ anchor: Anchor; box: FloatBox; src: string; plan: StandInPlan }> = [];
+		const planned: Array<{ anchor: DocAnchor; box: FloatBox; src: string; plan: StandInPlan }> = [];
 		// Pictures CodeMirror draws apart, on the cursor's line, start before any stand-in.
 		let floor = 0;
 		for (const anchor of anchorsOf(doc)) {
 			if (anchor.lineFrom >= viewportFrom) break;
+			if (!drawnAsImage(view.state, anchor.pos)) continue;
 			const float = this.floatFor(anchor);
 			if (!float) continue;
 			const anchorTop = view.lineBlockAt(anchor.lineFrom).top;
@@ -625,6 +733,18 @@ class StandInGuard {
 		);
 		// In front of other block widgets at the line (side -2), so the float starts at the line's top.
 		return Decoration.widget({ widget: new StandInWidget(items), block: true, side: -2 }).range(at);
+	}
+}
+
+/**
+ * Plans every editor's stand-ins again. Their sizes are fixed when they are planned, so a change to
+ * "Widest wrapped image" reaches them only through this; nothing in the editor changes by itself
+ * while a picture's own line is not drawn.
+ */
+export function refreshStandIns(): void {
+	for (const guard of liveGuards) {
+		guard.place();
+		guard.measure();
 	}
 }
 

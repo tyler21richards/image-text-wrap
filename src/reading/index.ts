@@ -14,7 +14,7 @@ import { MarkdownView, debounce, type Editor, type MarkdownPostProcessorContext 
 import { isPrintRoot } from '../dom';
 import type ImageTextWrapPlugin from '../main';
 import { WRAP_NOTE_CLASS, preparePrint } from './print';
-import { allSectionEls, attachedSectionEls } from './sections';
+import { allSectionEls, attachedSectionEls, rerenderInPlace } from './sections';
 import { StandIns } from './stand-ins';
 import { embedHasFloat, textHasFloat } from './wraps';
 
@@ -22,6 +22,22 @@ export { WRAP_NOTE_CLASS } from './print';
 
 const MEMO_SIZE = 8;
 const EDIT_CHECK_MS = 120;
+
+/** Set while the plugin is loaded: see refreshReadingView. */
+let relayout: ((apply: () => void) => void) | null = null;
+
+/**
+ * Applies a new "Widest wrapped image" (`apply` sets it) to the open Reading views of notes with
+ * floating images. The pictures in the page take the new width from styles.css at once, but Obsidian
+ * keeps the heights it measured for the sections it has taken off the page, and the stand-ins keep the
+ * old size, so the note would jump on the way back up (measured: 96px and 48px). So every section is
+ * rendered and measured again, and the stand-ins planned again. Each view's place is taken before
+ * `apply`: once the width changed, Obsidian reads it differently (measured: line 42.5 instead of 45.8).
+ */
+export function refreshReadingView(apply: () => void): void {
+	if (relayout) relayout(apply);
+	else apply();
+}
 
 export function registerReadingView(plugin: ImageTextWrapPlugin): void {
 	const { app } = plugin;
@@ -160,6 +176,18 @@ export function registerReadingView(plugin: ImageTextWrapPlugin): void {
 	plugin.registerEvent(app.workspace.on('layout-change', checkOpenViews));
 	plugin.registerEvent(app.workspace.on('file-open', checkOpenViews));
 
+	relayout = (apply) => {
+		const places = new Map<MarkdownView, number | null>();
+		app.workspace.iterateAllLeaves((leaf) => {
+			const view = leaf.view;
+			if (!(view instanceof MarkdownView) || !view.file || !known.get(view.file.path)) return;
+			places.set(view, view.getMode() === 'preview' ? view.previewMode.getScroll() : null);
+		});
+		apply();
+		standIns.refresh();
+		for (const [view, scroll] of places) rerenderInPlace(view, scroll);
+	};
+
 	// Reading views drawn before the plugin loaded have no classes yet.
 	app.workspace.onLayoutReady(() => {
 		if (unloaded) return;
@@ -174,6 +202,7 @@ export function registerReadingView(plugin: ImageTextWrapPlugin): void {
 
 	plugin.register(() => {
 		unloaded = true;
+		relayout = null;
 		checkEdits.cancel();
 		edited.clear();
 		standIns.destroy();

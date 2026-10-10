@@ -3,8 +3,8 @@ import { historyScrollFix } from './edit/write';
 import { lineClassField } from './live-preview/line-classes';
 import { toolbarExtension, destroyToolbars, refreshToolbars } from './live-preview/toolbar';
 import { dragExtension } from './live-preview/drag';
-import { standInExtension } from './live-preview/stand-ins';
-import { registerReadingView } from './reading';
+import { refreshStandIns, standInExtension } from './live-preview/stand-ins';
+import { refreshReadingView, registerReadingView } from './reading';
 import { registerImageMenu } from './menu';
 import { registerCommands } from './commands';
 import { DEFAULT_SETTINGS, ItwSettingTab, normalizeSettings, type ItwSettings } from './settings';
@@ -38,9 +38,14 @@ export default class ImageTextWrapPlugin extends Plugin {
 	}
 
 	async updateSettings(next: ItwSettings) {
+		const widthChanged = next.maxWrapWidth !== this.settings.maxWrapWidth;
 		this.settings = next;
 		await this.saveData(next);
-		applyCssVariables(this);
+		// A new width also lays out the Reading views again, which note their place before it applies.
+		if (widthChanged) refreshReadingView(() => applyCssVariables(this));
+		else applyCssVariables(this);
 		refreshToolbars();
+		// Stand-ins are sized when they are planned, so the new width only reaches them this way.
+		if (widthChanged) refreshStandIns();
 	}
 }

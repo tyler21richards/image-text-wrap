@@ -14,6 +14,7 @@ import { READING_PUSHER, READING_SIZER, READING_UI_SECTION, isElement } from '..
 interface RendererLike {
 	sections?: unknown;
 	sizerEl?: unknown;
+	applyScrollDelayed?: unknown;
 }
 
 /** The element that holds the sections of the Reading view of `view` (Obsidian's "sizer"). */
@@ -42,6 +43,52 @@ export function allSectionEls(view: MarkdownView): HTMLElement[] | null {
 		return out;
 	} catch {
 		return null;
+	}
+}
+
+/**
+ * The heights Obsidian keeps for the sections of the Reading view of `view`, by element. It places
+ * the sections it has taken off the page by these, so a section re-rendered off the page with another
+ * height moves everything below it. Empty when its renderer is not what we know.
+ */
+export function sectionHeights(view: MarkdownView): Map<HTMLElement, number> {
+	const out = new Map<HTMLElement, number>();
+	try {
+		const sections = (view.previewMode as unknown as { renderer?: RendererLike }).renderer?.sections;
+		if (!Array.isArray(sections)) return out;
+		for (const section of sections) {
+			const { el, height } = (section ?? {}) as { el?: unknown; height?: unknown };
+			if (isElement(el) && typeof height === 'number' && Number.isFinite(height)) out.set(el, height);
+		}
+	} catch {
+		/* nothing known */
+	}
+	return out;
+}
+
+/**
+ * Renders every section of the Reading view of `view` again, which also measures them again. Obsidian's
+ * rerender(true) empties the sections first, which loses the reader's place (measured: 2200px down
+ * Fixture.md, the view landed 830px higher). So a shown view gets back to `scroll` (its getScroll(),
+ * taken before anything changed) once the render is done, the way Obsidian does after a resize
+ * (renderer.applyScrollDelayed); a hidden one is placed by Obsidian when it is shown. Without that
+ * method a shown view is left alone: a later jump is better than losing the place. False then.
+ */
+export function rerenderInPlace(view: MarkdownView, scroll: number | null): boolean {
+	const preview = view.previewMode;
+	try {
+		if (scroll === null) {
+			preview.rerender(true);
+			return true;
+		}
+		const renderer = (preview as unknown as { renderer?: RendererLike }).renderer;
+		const restore = renderer?.applyScrollDelayed;
+		if (typeof restore !== 'function') return false;
+		preview.rerender(true);
+		(restore as (scroll: number) => void).call(renderer, scroll);
+		return true;
+	} catch {
+		return false;
 	}
 }
 
