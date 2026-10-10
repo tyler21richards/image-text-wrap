@@ -218,4 +218,65 @@ p > img:is([alt*="wrap-left"], [alt*="wrap-right"], [alt*="wrap-block"]) + br {
 	max-width: none;
 	border-radius: var(--image-radius);
 	pointer-events: none;
+
+/* ---------- Reading view ---------- */
+
+/*
+ * A heading beside a float keeps its text clear of the image, but its box (and any border a theme draws
+ * under it) runs under the image. As its own formatting context it sits beside the image as a whole.
+ * Applies to PDF export too, where the class is on the export's root.
+ */
+.itw-wrap-note :is(h1, h2, h3, h4, h5, h6) {
+	display: flow-root;
+}
+
+/*
+ * A remote image is a bare img whose stored size is its width attribute. The wrap rules above give it
+ * width: fit-content, which shrinks it to its natural size (48 px instead of 120 px measured), unlike
+ * Live Preview. Any CSS width overrides the attribute, so read it back; where attr() with a type is
+ * not supported the declaration is dropped and nothing changes.
+ */
+p > img:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="|wrap-left"])[width],
+p > img:is([alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt$="|wrap-right"])[width],
+p > img:is([alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt$="|wrap-block"])[width] {
+	width: attr(width px, auto);
+}
+
+/*
+ * Stand-ins (src/reading/stand-ins.ts): hidden copies of a wrapped image, cut to the part below the top
+ * of each section the image reaches. Reading view keeps only the sections near the screen in the page,
+ * after a "pusher" element that holds the space of those above. Only the first section in the page shows
+ * its stand-ins: exactly when the sections above it, the image's own among them, are gone. A section that
+ * keeps floats to itself (a table) passes that on to the next one.
+ */
+.itw-stand-in {
+	display: none;
+	box-sizing: border-box;
+	width: var(--itw-stand-in-width);
+	height: var(--itw-stand-in-height);
+	margin-top: var(--itw-stand-in-top, 0px);
+	overflow: hidden;
+	pointer-events: none;
+	user-select: none;
+}
+.itw-stand-in-left {
+	float: left;
+	clear: left;
+	margin-right: var(--itw-stand-in-gap, 0px);
+}
+.itw-stand-in-right {
+	float: right;
+	clear: right;
+	margin-left: var(--itw-stand-in-gap, 0px);
+}
+.itw-stand-in > img {
+	display: block;
+	width: 100%;
+	max-width: none;
+	height: auto;
+	margin-top: calc(-1 * var(--itw-stand-in-offset, 0px));
+}
+.markdown-preview-pusher + .itw-host > .itw-stand-in,
+.markdown-preview-pusher + .itw-host-skip + .itw-host > .itw-stand-in {
+	display: block;
 }

@@ -14,7 +14,17 @@
 //                  callouts: .cm-embed-block.cm-callout (block widget with contain: paint)
 //   Reading view:  p > span.internal-embed.media-embed.image-embed[src][alt][width] > img[alt][width]
 //                  an image glued above text shares its <p>, followed by <br>
-//                  section wrappers: .markdown-preview-sizer > div.el-p (etc.)
+//                  section wrappers: .markdown-preview-sizer > div.el-p (etc.); the header (title,
+//                  properties) and footer (backlinks) are sections with .mod-ui
+//                  every section, attached or not: MarkdownView.previewMode.renderer.sections[].el (internal)
+//                  only sections within one screen (at least 500 px) above and below the visible part are
+//                  in the page; the sizer's first child, div.markdown-preview-pusher, holds the space of
+//                  those above, so it always sits right before the first section in the page
+//                  a table section carries inline overflow-x: auto (a formatting context of its own)
+//   PDF export:    a separate window; .print > div.markdown-preview-view.markdown-rendered is passed to
+//                  post-processors once, with getSectionInfo() === null (a transcluded note's
+//                  .markdown-embed-content > .markdown-preview-view gets its own call); its children are
+//                  one div per block (div > p, div > h2, div > ul ...), except a bare <hr>
 import { EditorView } from '@codemirror/view';
 
 export const EMBED = '.internal-embed.image-embed';
@@ -59,3 +69,22 @@ export function selectedEmbed(view: EditorView): HTMLElement | null {
 export function columnRect(view: EditorView): DOMRect {
 	return view.contentDOM.getBoundingClientRect();
 }
+
+/**
+ * The element holding a Reading view's section elements (one div per block), the class of its header and
+ * footer sections, and the class of the element before the first section in the page (see the header).
+ */
+export const READING_SIZER = '.markdown-preview-sizer';
+export const READING_UI_SECTION = 'mod-ui';
+export const READING_PUSHER = 'markdown-preview-pusher';
+
+/** The root of a note in a PDF export: post-processed once, with no section information. */
+export function isPrintRoot(el: HTMLElement): boolean {
+	return el.matches('.markdown-preview-view') && !!el.closest('.print');
+}
+
+/**
+ * Images that may carry layout tokens in Reading view and PDF: native embeds (matched as .internal-embed,
+ * which they are from the start, before Obsidian adds .image-embed), and remote images (a bare img).
+ */
+export const READING_IMAGES = '.internal-embed[alt], p > img[alt]';
