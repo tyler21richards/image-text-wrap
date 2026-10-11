@@ -122,7 +122,7 @@ async function hideEarly(cfg) {
  * Keeps measurements valid while the window is in the background: a hidden or occluded window
  * stops requestAnimationFrame (so CodeMirror stops measuring), and an unfocused one loses focus events.
  */
-async function prepareWindow(page) {
+export async function prepareWindow(page) {
 	await page.evaluate(() => window.electronWindow?.setBackgroundThrottling(false)).catch(() => {});
 	if (!visible()) await hideWindows(page);
 	try {
