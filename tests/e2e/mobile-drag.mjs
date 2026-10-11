@@ -4,9 +4,10 @@
 //   node scripts/obsidian.mjs run tests/e2e/mobile-drag.mjs <screenshot dir> [phone|tablet|light|dark|<part of a test name> ...]
 //
 // Every test runs in phone and in tablet emulation, in the light and in the dark theme; the emulation is
-// switched off again at the end. Gestures are real touch input (touch(page)) and real key presses.
-// page.evaluate measures, resets the note, flips the setting, records buzzes, and stands in for the on-screen
-// keyboard (window.visualViewport), which the emulation does not have.
+// switched off again at the end. Gestures are real touch input (touch(page)), real key presses, and for a pen
+// real mouse input with pointerType "pen" (Input.dispatchMouseEvent). page.evaluate measures, resets the note,
+// flips the setting, records buzzes, adds a button to press keys on, and stands in for the on-screen keyboard
+// (window.visualViewport) and for the app going to the background (a blur), which the emulation does not have.
 // Prints one line per test: size, theme, name, pass/fail, and the evidence.
 import { mkdirSync } from 'node:fs';
 import * as d from './drag-lib.mjs';
@@ -41,6 +42,62 @@ export default async ({ page, openNote, watchErrors, args }) => {
 	const results = [];
 	const tp = touch(page);
 	const themeBefore = await page.evaluate(() => app.vault.getConfig('theme'));
+	// For pen input (Input.dispatchMouseEvent with pointerType "pen") and for counting the document's listeners.
+	const cdp = await page.context().newCDPSession(page);
+
+	/** The document's capture listeners for clicks, menus and presses, as "type" -> count (what a click guard adds). */
+	const guardListeners = async () => {
+		const { result } = await cdp.send('Runtime.evaluate', { expression: 'document' });
+		const { listeners } = await cdp.send('DOMDebugger.getEventListeners', { objectId: result.objectId });
+		await cdp.send('Runtime.releaseObject', { objectId: result.objectId });
+		const count = {};
+		for (const l of listeners)
+			if (l.useCapture && ['click', 'contextmenu', 'pointerdown', 'pointerup', 'pointercancel'].includes(l.type)) count[l.type] = (count[l.type] ?? 0) + 1;
+		return count;
+	};
+	const sameListeners = (a, b) => JSON.stringify(Object.entries(a).sort()) === JSON.stringify(Object.entries(b).sort());
+	/**
+	 * A button outside the note, focused, with a click counter, as someone with a keyboard (an iPad's or an Android
+	 * tablet's) would have it; then the keys are pressed on it. Returns the click count after each key.
+	 */
+	const keyClicks = async (keys) => {
+		const focused = await page.evaluate(() => {
+			document.querySelector('#itw-key-probe')?.remove();
+			const b = document.body.createEl('button', { text: 'Probe', attr: { id: 'itw-key-probe', style: 'position: fixed; left: 10px; top: 200px; z-index: 9999' } });
+			window.__itwKeyClicks = 0;
+			b.addEventListener('click', () => window.__itwKeyClicks++);
+			b.focus();
+			return document.activeElement === b;
+		});
+		const counts = [];
+		try {
+			for (const key of keys) {
+				await page.keyboard.press(key);
+				await d.sleep(250);
+				counts.push(await page.evaluate(() => window.__itwKeyClicks));
+			}
+		} finally {
+			await page.evaluate(() => document.querySelector('#itw-key-probe')?.remove());
+		}
+		return { focused, counts };
+	};
+	/** Pen input (an Apple Pencil, an S Pen): real CDP mouse events with pointerType "pen". */
+	const pen = (type, x, y, buttons) =>
+		cdp.send('Input.dispatchMouseEvent', {
+			type,
+			x,
+			y,
+			button: type === 'mouseMoved' && !buttons ? 'none' : 'left',
+			buttons,
+			clickCount: type === 'mouseMoved' ? 0 : 1,
+			pointerType: 'pen',
+		});
+	const penMove = async (x0, y0, x1, y1, steps = 12, stepMs = 16) => {
+		for (let i = 1; i <= steps; i++) {
+			await pen('mouseMoved', Math.round(x0 + ((x1 - x0) * i) / steps), Math.round(y0 + ((y1 - y0) * i) / steps), 1);
+			await d.sleep(stepMs);
+		}
+	};
 
 	/** Buzzes, pick-up rings, menus, pointercancels and touchmoves seen since the last take(). */
 	const instrument = () =>
@@ -420,6 +477,89 @@ export default async ({ page, openNote, watchErrors, args }) => {
 			};
 		});
 
+		// A cancelled touch (the system took the gesture over: Control Center, the app switcher, a call) sends no
+		// release and no click, so nothing may be left waiting for one: the next click made with the keyboard (Enter or
+		// Space on a focused button, with an iPad's or a tablet's keyboard) has to go through.
+		for (const [name, how] of [
+			['a touch cancelled during a drag leaves the next key press alone', 'drag'],
+			['a touch cancelled after a pick-up leaves the next key press alone', 'lift'],
+			['Escape, then a cancelled touch, leaves the next key press alone', 'escape'],
+			['the app going to the background, then a cancelled touch, leaves the next key press alone', 'blur'],
+		]) {
+			await run(name, async () => {
+				await showLine(L.landscape, 30);
+				const g = await d.geometry(page, L.landscape);
+				const c = center(g);
+				const before = await guardListeners();
+				await tp.down(c.x, c.y);
+				await d.sleep(HOLD);
+				if (how !== 'lift') await tp.moveTo(c.x, c.y, c.x + 40, c.y + 160, 8, 16);
+				await d.sleep(150);
+				const during = await d.dragState(page);
+				const held = await snap();
+				if (how === 'escape') await page.keyboard.press('Escape');
+				// Stands in for the app going to the background (the emulation cannot hide the window).
+				if (how === 'blur') await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+				await d.sleep(100);
+				await tp.cancel();
+				await d.sleep(1200);
+				const after = await guardListeners();
+				const drag = await d.dragState(page);
+				const s = await snap();
+				const keys = await keyClicks(['Enter', ' ']);
+				const unchanged = (await d.noteText(page)) === original;
+				const started = how === 'lift' ? held.lifted.includes(L.landscape) : !!during.ghost;
+				return {
+					pass: started && sameListeners(before, after) && keys.focused && JSON.stringify(keys.counts) === '[1,2]' && clean(drag) && s.pressed === 0 && s.lifted.length === 0 && unchanged,
+					evidence: `${how === 'lift' ? `picked up: ${started}` : `dragging: ghost=${started}`}; document capture listeners before ${JSON.stringify(before)}, 1.2 s after the touchcancel ${JSON.stringify(after)}; button focused=${keys.focused}, clicks after Enter, Space: ${JSON.stringify(keys.counts)}; overlays=${drag.overlays}, body classes ${JSON.stringify(drag.bodyClasses)}, pressed=${s.pressed}, lifted=${s.lifted.length}; unchanged=${unchanged}`,
+				};
+			});
+		}
+
+		await run('a pen picks the image up with a long press too, and a quick stroke does not', async () => {
+			const aim = async () => {
+				const b = await band();
+				const c = center(await d.geometry(page, L.squarePlain));
+				return { c, to: { x: Math.round(b.left + (b.right - b.left) * 0.25), y: Math.round((await d.lineY(page, L.topHeading)) + 6) } };
+			};
+			await showBoth(L.squarePlain, L.topHeading);
+			let { c, to } = await aim();
+			// A quick stroke, with no rest first: not followed (a pen on a phone or tablet works as a finger does).
+			await pen('mouseMoved', c.x, c.y, 0);
+			await pen('mousePressed', c.x, c.y, 1);
+			await penMove(c.x, c.y, to.x, to.y, 12, 16);
+			await d.sleep(150);
+			const stroke = await d.dragState(page);
+			const strokeSnap = await snap();
+			await pen('mouseReleased', to.x, to.y, 0);
+			await d.sleep(600);
+			const strokeUnchanged = (await d.noteText(page)) === original;
+			await reset();
+			await showBoth(L.squarePlain, L.topHeading);
+			({ c, to } = await aim());
+			// Rested on the image first: picked up, then dragged.
+			await pen('mouseMoved', c.x, c.y, 0);
+			await pen('mousePressed', c.x, c.y, 1);
+			await d.sleep(HOLD);
+			const held = await snap();
+			const r = await take();
+			await penMove(c.x, c.y, to.x, to.y, 16, 20);
+			await d.sleep(150);
+			await d.frames(page, 3);
+			const during = await d.dragState(page);
+			await pen('mouseReleased', to.x, to.y, 0);
+			await d.sleep(1000);
+			const lines = (await d.noteText(page)).split('\n');
+			const at = lines.indexOf('![[square.png|180]]');
+			const landed = at > L.squarePlain && lines.slice(at + 1, at + 3).includes('## Top and bottom');
+			await undo();
+			const undone = (await d.noteText(page)) === original;
+			return {
+				pass: !stroke.ghost && strokeSnap.lifted.length === 0 && strokeUnchanged && held.lifted.includes(L.squarePlain) && JSON.stringify(r.buzz) === '[50]' && !!during.ghost && during.label?.text === 'Move here' && landed && undone,
+				evidence: `quick stroke: ghost=${!!stroke.ghost}, lifted=${strokeSnap.lifted.length}, unchanged=${strokeUnchanged}; rested ${HOLD} ms: lifted lines ${JSON.stringify(held.lifted)}, buzz ${JSON.stringify(r.buzz)}; then dragged: ghost=${!!during.ghost}, label "${during.label?.text}"; landed at line ${at}: ${JSON.stringify(lines.slice(at, at + 3).map((s) => s.slice(0, 30)))}; undone=${undone}`,
+			};
+		});
+
 		await run('Escape cancels a drag, and lifting the finger afterwards does nothing', async () => {
 			await showLine(L.landscape, 30);
 			const g = await d.geometry(page, L.landscape);
@@ -561,6 +701,7 @@ export default async ({ page, openNote, watchErrors, args }) => {
 	} finally {
 		await tp.cancel().catch(() => {});
 		await reset().catch(() => {});
+		await cdp.detach().catch(() => {});
 		await setMobile(page, false);
 		// After the reload that leaving the emulation takes, or the theme is not saved.
 		await page.evaluate((t) => app.changeTheme(t ?? 'moonstone'), themeBefore).catch(() => {});

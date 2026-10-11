@@ -5,6 +5,7 @@ import {
 	ghostByFinger,
 	LONG_PRESS_MS,
 	LONG_PRESS_SLOP,
+	longPressFor,
 	pastSlop,
 	pastThreshold,
 	visibleBand,
@@ -21,6 +22,19 @@ test('a finger picks an image up after about half a second, resting within about
 	// A wobble that would start a mouse drag (past 5 px) does not end a long press.
 	assert.equal(pastThreshold(6, 0), true);
 	assert.equal(pastSlop(6, 0), false);
+});
+
+test('a touch picks an image up with a long press everywhere, a pen only on a phone or tablet', () => {
+	assert.equal(longPressFor('touch', true), true);
+	assert.equal(longPressFor('touch', false), true);
+	// An Apple Pencil or an S Pen works as a finger does.
+	assert.equal(longPressFor('pen', true), true);
+	// On a desktop a pen (a graphics tablet) drags past 5 px, as the mouse does and as it did in 1.0.0.
+	assert.equal(longPressFor('pen', false), false);
+	assert.equal(longPressFor('mouse', false), false);
+	assert.equal(longPressFor('mouse', true), false);
+	// A pointer type the browser does not name goes the mouse's way, as in 1.0.0.
+	assert.equal(longPressFor('', false), false);
 });
 
 test('the ghost sits centred above the finger, clear of it', () => {
