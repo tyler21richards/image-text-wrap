@@ -114,10 +114,30 @@ export interface SheetScreen {
 	keyboard: number;
 	/** The bottom safe-area inset (the home indicator). */
 	safeBottom: number;
+	/** The top safe-area inset (the status bar, a notch). */
+	safeTop: number;
 	/** The tops of the bars docked at the bottom: Obsidian's navigation bar and its editing toolbar. */
 	bars: readonly number[];
 	/** Space kept between the sheet and whatever is below it. */
 	gap: number;
+}
+
+/** The note's header bar, which lies over the top of the note on phones, in window coordinates. */
+export interface SheetHeader {
+	/** Its bottom edge now; -Infinity when there is none. */
+	bottom: number;
+	/** Its bottom edge where it rests while shown, leaving out a slide away (a transform) under way or done. */
+	restingBottom: number;
+	/**
+	 * Whether it slides away as soon as the note scrolls down: Obsidian's "auto full screen" on phones, which
+	 * does not act while the keyboard is up.
+	 */
+	hidesOnScroll: boolean;
+}
+
+/** Whether a keyboard covers the bottom of the screen, as Obsidian reports it or as the visual viewport shows it. */
+export function keyboardShown(s: SheetScreen): boolean {
+	return s.keyboard > 0 || (!!s.visual && s.visual.top + s.visual.height < s.height - 1);
 }
 
 /**
@@ -129,6 +149,27 @@ export function sheetBottom(s: SheetScreen): number {
 	if (s.visual) floor = Math.min(floor, s.visual.top + s.visual.height);
 	for (const top of s.bars) floor = Math.min(floor, top);
 	return Math.round(Math.max(s.height - floor, s.safeBottom) + s.gap);
+}
+
+/**
+ * Where the top edge of a sheet `height` px tall goes (window px), sitting at sheetBottom(s). Null when it
+ * does not fit: it must stay on screen, below the note's header (where it rests while shown, so the sheet
+ * does not come and go as the header slides) and the top safe area, and leave at least `noteRoom` px of the
+ * note visible between them. With the keyboard up on a phone in landscape there is no such room, and the
+ * sheet waits until there is.
+ */
+export function sheetTop(s: SheetScreen, height: number, header: SheetHeader, noteRoom: number): number | null {
+	const top = s.height - sheetBottom(s) - height;
+	const limit = Math.max(0, s.safeTop, header.restingBottom);
+	return top - limit >= noteRoom ? top : null;
+}
+
+/**
+ * How high a reveal (revealScroll) may bring a picture's top: below the note's header and the top safe area.
+ * A header that slides away as the note scrolls down does not count: the reveal's own scroll sends it away.
+ */
+export function revealTop(s: SheetScreen, header: SheetHeader, scrollerTop: number): number {
+	return Math.max(0, scrollerTop, s.safeTop, header.hidesOnScroll ? -Infinity : header.bottom);
 }
 
 /**

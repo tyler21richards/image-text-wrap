@@ -10,18 +10,31 @@ import {
 	layoutAfterWrapClick,
 	layoutForGap,
 } from '../../src/ui/layout-choices.ts';
-import { revealScroll, sheetBottom, type Box, type SheetScreen } from '../../src/ui/place-toolbar.ts';
+import {
+	keyboardShown,
+	revealScroll,
+	revealTop,
+	sheetBottom,
+	sheetTop,
+	type Box,
+	type SheetHeader,
+	type SheetScreen,
+} from '../../src/ui/place-toolbar.ts';
 
 const phone = (over: Partial<SheetScreen> = {}): SheetScreen => ({
 	height: 844,
 	visual: { top: 0, height: 844 },
 	keyboard: 0,
 	safeBottom: 34,
+	safeTop: 59,
 	bars: [],
 	gap: 8,
 	...over,
 });
 const box = (left: number, top: number, right: number, bottom: number): Box => ({ left, top, right, bottom });
+/** The phone's header bar, 59..104, shown; with auto full screen it slides away as the note scrolls down. */
+const header = (over: Partial<SheetHeader> = {}): SheetHeader => ({ bottom: 104, restingBottom: 104, hidesOnScroll: false, ...over });
+const NO_HEADER: SheetHeader = { bottom: -Infinity, restingBottom: -Infinity, hidesOnScroll: false };
 
 test('the sheet sits above Obsidian\'s floating navigation bar', () => {
 	// The bar is 760..812 on a 844 px phone.
@@ -78,6 +91,80 @@ test('a picture taller than the free space shows its top, never scrolled past it
 	assert.equal(revealScroll(box(24, 600, 344, 1500), HEADER, SHEET_TOP, 8), 600 - 112);
 	// Already showing its top under the header: no scroll at all.
 	assert.equal(revealScroll(box(24, 110, 344, 1500), HEADER, SHEET_TOP, 8), 0);
+});
+
+// Phone in landscape, as measured in the emulation: 844 x 390, the floating navigation bar at 306, the
+// header 59..104, the top safe area 59 (the emulation keeps the portrait insets).
+const landscape = (over: Partial<SheetScreen> = {}): SheetScreen =>
+	phone({ height: 390, visual: { top: 0, height: 390 }, bars: [306], ...over });
+/** The editing toolbar (44 px) above a keyboard of `kb` px, with the navigation bar taken out. */
+const typing = (kb: number): Partial<SheetScreen> => ({ keyboard: kb, bars: [390 - kb - 44] });
+const ROOM = 88;
+
+test('the sheet fits under the header with room for the note: its top edge', () => {
+	// Portrait, the full sheet (186 px) above the floating navigation bar at 760.
+	assert.equal(sheetTop(phone({ bars: [760] }), 186, header(), ROOM), 844 - 92 - 186);
+	// Portrait with a 300 px keyboard and the editing toolbar (52 px) above it: still plenty of note above it.
+	assert.equal(sheetTop(phone({ keyboard: 300, bars: [492] }), 186, header(), ROOM), 492 - 8 - 186);
+	// Landscape, the compact sheet (68 px): above the navigation bar's resting place.
+	assert.equal(sheetTop(landscape(), 68, header(), ROOM), 306 - 8 - 68);
+});
+
+test('with the keyboard up on a phone in landscape the sheet does not fit, and hides rather than leave the screen', () => {
+	// The full sheet (169 px) with a 200 px keyboard: its top would be at -39, off the screen.
+	assert.equal(sheetTop(landscape(typing(200)), 169, header(), ROOM), null);
+	// The compact sheet still leaves no room for the note under the header (top 70 < 104 + 88).
+	assert.equal(sheetTop(landscape(typing(200)), 68, header(), ROOM), null);
+	assert.equal(sheetTop(landscape(typing(120)), 68, header(), ROOM), null);
+	// A real iPhone has no top inset in landscape and a lower header (12..57): a small keyboard leaves room.
+	const real = (kb: number) => landscape({ ...typing(kb), safeTop: 0 });
+	assert.equal(sheetTop(real(120), 68, header({ bottom: 57, restingBottom: 57 }), ROOM), 390 - 120 - 44 - 8 - 68);
+	assert.equal(sheetTop(real(200), 68, header({ bottom: 57, restingBottom: 57 }), ROOM), null);
+});
+
+test('the room is counted from where the header rests, so the sheet does not come and go as the header slides', () => {
+	const slidAway = header({ bottom: 1, restingBottom: 104 });
+	assert.equal(sheetTop(landscape(typing(120)), 68, slidAway, ROOM), null);
+	assert.equal(sheetTop(landscape(), 68, slidAway, ROOM), sheetTop(landscape(), 68, header(), ROOM));
+});
+
+test('without a header, the top safe area and the top of the screen bound the sheet', () => {
+	assert.equal(sheetTop(landscape(typing(120)), 68, NO_HEADER, ROOM), 150);
+	assert.equal(sheetTop(landscape({ ...typing(120), safeTop: 0 }), 68, NO_HEADER, 150), 150);
+	assert.equal(sheetTop(landscape({ ...typing(120), safeTop: 0 }), 68, NO_HEADER, 151), null);
+});
+
+test('a keyboard is up when Obsidian reports one or the visual viewport ends above the window\'s bottom', () => {
+	assert.equal(keyboardShown(phone()), false);
+	assert.equal(keyboardShown(phone({ visual: null })), false);
+	assert.equal(keyboardShown(phone({ keyboard: 300 })), true);
+	assert.equal(keyboardShown(phone({ visual: { top: 0, height: 544 } })), true);
+});
+
+test('a reveal brings the picture up to below the header, or to below the top safe area when the header slides away', () => {
+	assert.equal(revealTop(phone(), header(), 0), 104);
+	// Auto full screen: the reveal's scroll sends the header away, freeing its place.
+	assert.equal(revealTop(phone(), header({ hidesOnScroll: true }), 0), 59);
+	assert.equal(revealTop(phone({ safeTop: 0 }), header({ hidesOnScroll: true }), 0), 0);
+	// Already slid away: the status bar still counts.
+	assert.equal(revealTop(phone(), header({ bottom: 1 }), 0), 59);
+	// A tablet: the header sits above the note, whose scroller starts below it.
+	assert.equal(revealTop(phone({ safeTop: 0 }), header({ bottom: 80, restingBottom: 80 }), 80), 80);
+});
+
+test('phone landscape: the picture (210 px) fits between the status bar and the compact sheet once the header slides away', () => {
+	const screen = landscape();
+	const top = sheetTop(screen, 68, header(), ROOM);
+	assert.ok(top !== null);
+	// Tapped low on the screen, under where the sheet goes.
+	const picture = box(72, 295, 392, 505);
+	const delta = revealScroll(picture, revealTop(screen, header({ hidesOnScroll: true }), 0), top, 8);
+	const after = { top: picture.top - delta, bottom: picture.bottom - delta };
+	assert.ok(after.top >= 59 + 8, `top ${after.top}`);
+	assert.ok((top - after.top) / 210 >= 0.7, `${top - after.top} of 210 px above the sheet`);
+	// With the header staying (auto full screen off), the header bounds it and a strip stays under the sheet.
+	const stays = revealScroll(picture, revealTop(screen, header(), 0), top, 8);
+	assert.equal(picture.top - stays, 104 + 8);
 });
 
 test('the sheet\'s buttons carry short visible labels in plain English, in Word\'s order', () => {

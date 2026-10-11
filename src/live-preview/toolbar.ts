@@ -12,9 +12,19 @@ import { locateEmbed, type LocatedLink } from '../edit/locate';
 import type { Gap, Layout } from '../grammar';
 import { registerIcons } from '../icons';
 import type ImageTextWrapPlugin from '../main';
-import { placeToolbar, revealScroll, sheetBottom, visiblePart, type Box, type Placement } from '../ui/place-toolbar';
+import {
+	keyboardShown,
+	placeToolbar,
+	revealScroll,
+	revealTop,
+	sheetBottom,
+	sheetTop,
+	visiblePart,
+	type Box,
+	type Placement,
+} from '../ui/place-toolbar';
 import { PictureToolbar, type LayoutPanel, type ToolbarHost, type ToolbarSubject } from './toolbar-dom';
-import { PictureSheet, ScreenWatch, headerBottom, measureScreen } from './toolbar-sheet';
+import { DOUBLE_TAP_WAIT, PictureSheet, ScreenWatch, measureHeader, measureScreen } from './toolbar-sheet';
 import { keepScrollExtension, releaseScrollPosition } from './keep-scroll';
 import { isLivePreview, writeLayout } from './toolbar-target';
 
@@ -23,6 +33,12 @@ const GAP = 8;
 const MARGIN = 4;
 /** On phones and tablets: space between the sheet and the bars or keyboard below it, and kept around the picture it reveals. */
 const SHEET_GAP = 8;
+/**
+ * On phones and tablets: how much of the note the sheet leaves visible below the note's header at least (two
+ * rows of 44 px). With less room, as with the keyboard up on a phone in landscape, the sheet would hide the
+ * whole note or run off the screen, so it hides until the keyboard goes.
+ */
+const NOTE_ROOM = 88;
 
 const toolbars = new Map<Document, PictureToolbar>();
 const sheets = new Map<Document, PictureSheet>();
@@ -93,8 +109,17 @@ interface SheetMeasured {
 	subject: ToolbarSubject;
 	/** The sheet's bottom edge, in px above the bottom of the window. */
 	bottom: number;
-	/** How far to scroll the note to show the picture above the sheet, if it has not been done for it yet. */
+	/** How far to scroll the note to show the picture above the sheet (0 when it does not cover the picture). */
 	reveal: number;
+}
+
+/** Phones and tablets: a reveal waiting until the second tap of a double tap can no longer come. */
+interface PendingReveal {
+	/** The start of the picture's link. */
+	from: number;
+	timer: number;
+	/** The wait is over: the next write scrolls. */
+	due: boolean;
 }
 
 class ToolbarView implements PluginValue, ToolbarHost {
@@ -116,9 +141,14 @@ class ToolbarView implements PluginValue, ToolbarHost {
 	private dismissedAt: number | null = null;
 	/**
 	 * Phones and tablets: start of the link whose picture has been scrolled clear of the sheet, which happens
-	 * once per tap on it. Scrolling it back under the sheet afterwards is the user's choice.
+	 * once per tap on it (and again after a rotation). Scrolling it back under the sheet afterwards is the
+	 * user's choice.
 	 */
 	private revealedAt: number | null = null;
+	/** Phones and tablets: that scroll, while it waits for a double tap's second tap (writeSheet). */
+	private pendingReveal: PendingReveal | null = null;
+	/** Phones and tablets: the window's width when last seen. A new width is a rotation; a keyboard changes only the height. */
+	private width: number;
 	/** A measure request queued before destroy() may still run; it must not show the toolbar again. */
 	private destroyed = false;
 
@@ -136,8 +166,9 @@ class ToolbarView implements PluginValue, ToolbarHost {
 		view.scrollDOM.addEventListener('pointerdown', this.onPointerDown, true);
 		view.contentDOM.addEventListener('load', this.schedule, true);
 		view.dom.addEventListener('keydown', this.onKeyDown, true);
+		this.width = view.dom.win.innerWidth;
 		if (this.mobile) {
-			this.screen = new ScreenWatch(view.scrollDOM, { changed: this.schedule, keydown: this.onWindowKeyDown, tapped: this.onTap });
+			this.screen = new ScreenWatch(view.scrollDOM, { changed: this.onScreenChange, keydown: this.onWindowKeyDown, tapped: this.onTap });
 		}
 		liveViews.add(this);
 		this.schedule();
@@ -152,6 +183,7 @@ class ToolbarView implements PluginValue, ToolbarHost {
 			if (this.dismissedAt !== null) this.dismissedAt = update.changes.mapPos(this.dismissedAt, 1);
 			// Kept at the start of its link when a layout change rewrites the link.
 			if (this.revealedAt !== null) this.revealedAt = update.changes.mapPos(this.revealedAt, -1);
+			if (this.pendingReveal) this.pendingReveal.from = update.changes.mapPos(this.pendingReveal.from, -1);
 			this.located = null;
 		}
 		this.schedule();
@@ -262,7 +294,8 @@ class ToolbarView implements PluginValue, ToolbarHost {
 
 	/**
 	 * Phones and tablets: the sheet sits above the keyboard and Obsidian's bars, and shows while any of the
-	 * picture is on screen (above the keyboard, below the note's header), also behind the sheet itself.
+	 * picture is on screen (above the keyboard, below the note's header), also behind the sheet itself, and
+	 * while it fits on screen below the header (sheetTop).
 	 */
 	private readSheet(): SheetMeasured | null {
 		const view = this.view;
@@ -278,14 +311,14 @@ class ToolbarView implements PluginValue, ToolbarHost {
 		// the note, and over the sheet, which is drawn below Obsidian's sidebars.)
 		if (scroller.left < -1 || scroller.right > win.innerWidth + 1) return null;
 		const screen = measureScreen(view.dom.doc, SHEET_GAP);
-		const bottom = sheetBottom(screen);
+		const header = measureHeader(view.scrollDOM, keyboardShown(screen));
 		const keyboardTop = Math.min(
 			screen.height - screen.keyboard,
 			screen.visual ? screen.visual.top + screen.visual.height : Infinity,
 		);
 		const visible: Box = {
 			left: Math.max(scroller.left, 0),
-			top: Math.max(scroller.top, 0, headerBottom(view.scrollDOM)),
+			top: Math.max(scroller.top, 0, header.bottom),
 			right: Math.min(scroller.right, win.innerWidth),
 			bottom: Math.min(scroller.bottom, keyboardTop),
 		};
@@ -293,14 +326,14 @@ class ToolbarView implements PluginValue, ToolbarHost {
 		if (picture.width === 0 || picture.height === 0) picture = embed.getBoundingClientRect();
 		if (!visiblePart(box(picture), visible)) return null;
 
-		const from = located.link.from;
-		const sheetTop = screen.height - bottom - sheet.el.offsetHeight;
+		const top = sheetTop(screen, sheet.el.offsetHeight, header, NOTE_ROOM);
+		if (top === null) return null;
 		return {
 			sheet,
 			embed,
-			subject: { from, layout: located.link.layout, doc: view.state.doc },
-			bottom,
-			reveal: this.revealedAt === from ? 0 : revealScroll(box(picture), visible.top, sheetTop, SHEET_GAP),
+			subject: { from: located.link.from, layout: located.link.layout, doc: view.state.doc },
+			bottom: sheetBottom(screen),
+			reveal: revealScroll(box(picture), revealTop(screen, header, scroller.top), top, SHEET_GAP),
 		};
 	}
 
@@ -316,10 +349,19 @@ class ToolbarView implements PluginValue, ToolbarHost {
 		this.shownOn = m.sheet;
 		this.shownFrom = m.subject.from;
 		this.watch(m.embed);
-		// Once per tap on a picture: a picture the sheet would cover scrolls up into view. A write keeps the
-		// view still (writeLayout), and scrolling the note afterwards is left alone.
-		if (this.revealedAt !== m.subject.from) {
-			this.revealedAt = m.subject.from;
+		// Once per tap on a picture (and after a rotation): a picture the sheet would cover scrolls up into
+		// view. Not at once: the second tap of a double tap must find the picture where the first one did (it
+		// opens Obsidian's viewer there), so the scroll waits until such a tap can no longer come, and a press
+		// on the note meanwhile (that tap, or the start of a scroll) calls it off. A write keeps the view still
+		// (writeLayout), and scrolling the note afterwards is left alone.
+		const from = m.subject.from;
+		const pending = this.pendingReveal;
+		if (this.revealedAt !== from) {
+			this.revealedAt = from;
+			this.cancelReveal();
+			if (m.reveal > 0) this.revealLater(from);
+		} else if (pending && pending.due && pending.from === from) {
+			this.pendingReveal = null;
 			if (m.reveal > 0) {
 				const still = this.view.dom.win.matchMedia('(prefers-reduced-motion: reduce)').matches;
 				this.view.scrollDOM.scrollBy({ top: m.reveal, behavior: still ? 'auto' : 'smooth' });
@@ -327,8 +369,26 @@ class ToolbarView implements PluginValue, ToolbarHost {
 		}
 	}
 
+	/** Phones and tablets: scrolls the picture of the link at `from` clear of the sheet in DOUBLE_TAP_WAIT ms, measured afresh then. */
+	private revealLater(from: number): void {
+		const pending: PendingReveal = { from, timer: 0, due: false };
+		pending.timer = this.view.dom.win.setTimeout(() => {
+			if (this.pendingReveal !== pending || this.destroyed) return;
+			pending.due = true;
+			this.view.requestMeasure(this.sheetRequest);
+		}, DOUBLE_TAP_WAIT);
+		this.pendingReveal = pending;
+	}
+
+	private cancelReveal(): void {
+		if (!this.pendingReveal) return;
+		this.view.dom.win.clearTimeout(this.pendingReveal.timer);
+		this.pendingReveal = null;
+	}
+
 	/** Hides the toolbar if this view is the one showing it. */
 	private release(): void {
+		this.cancelReveal();
 		this.watch(null);
 		const toolbar = this.shownOn;
 		this.shownOn = null;
@@ -389,6 +449,8 @@ class ToolbarView implements PluginValue, ToolbarHost {
 		releaseScrollPosition(this.view);
 		// A new click in the note brings a dismissed toolbar back.
 		this.dismissedAt = null;
+		// Phones and tablets: a double tap's second tap, or the start of a scroll, calls off a waiting reveal.
+		this.cancelReveal();
 	};
 
 	private readonly onWheel = (): void => {
@@ -406,6 +468,20 @@ class ToolbarView implements PluginValue, ToolbarHost {
 	/** Phones and tablets: a tap in the note (a scroll makes no click), which may select a picture anew. */
 	private readonly onTap = (): void => {
 		this.revealedAt = null;
+		this.schedule();
+	};
+
+	/**
+	 * Phones and tablets: something that places the sheet or the note may have changed. A rotation (a new
+	 * window width) moves both, so the picture is revealed again; a keyboard opening (only the height
+	 * changes) does not do that.
+	 */
+	private readonly onScreenChange = (): void => {
+		const width = this.view.dom.win.innerWidth;
+		if (width !== this.width) {
+			this.width = width;
+			this.revealedAt = null;
+		}
 		this.schedule();
 	};
 
