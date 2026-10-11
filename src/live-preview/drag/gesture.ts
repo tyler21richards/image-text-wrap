@@ -8,13 +8,19 @@
 // then held so the image appears where the indicator was, while the text around it settles (keep-scroll.ts).
 // Undo goes back to the view at the press, where the image was.
 //
+// A finger (touch or pen) has to rest on the image first: a tap still selects it and a swipe still scrolls the
+// note. After half a second without moving more than 8 px the image is picked up (it is outlined, a ring spreads
+// from the finger, and the device gives a short buzz where it can); from then on the browser does not scroll,
+// and moving the finger drags the image exactly as the mouse does, with the ghost above the finger. Lifting the
+// finger without moving puts the image down as it was, selected.
+//
 // The flow (targets found once from the text, placed on screen through CodeMirror's height map, the
 // rAF auto-scroll loop, the commit) follows Adjustable Media (src/view/blockDrag.ts, src/view/plainDrag.ts),
 // MIT, (c) 2026 Yi-luo-hua.
 import type { Text } from '@codemirror/state';
 import type { EditorView } from '@codemirror/view';
-import { Notice } from 'obsidian';
-import { EMBED, PANE } from '../../dom';
+import { Notice, Platform } from 'obsidian';
+import { EMBED, PANE, SELECTED_CLASS } from '../../dom';
 import { CHANGED_ELSEWHERE, USER_EVENT, dispatchOwn, markView, type ViewMark } from '../../edit/write';
 import type { LocatedLink } from '../../edit/locate';
 import { relayout, type ImageLink, type Wrap } from '../../grammar';
@@ -25,16 +31,20 @@ import {
 	clamp,
 	landingRise,
 	landingShortfall,
+	LONG_PRESS_MS,
 	nearestTarget,
+	pastSlop,
 	pastThreshold,
 	scrollSpeed,
 	shiftAt,
 	sideAt,
+	type Band,
 	type Shift,
 	type Side,
 } from './geometry';
-import { DragGhost, DropIndicator, type Rect } from './overlay';
+import { DragGhost, DropIndicator, showPickUp, type Rect } from './overlay';
 import { swallowNextClick, trackPointer, type TrackedPointer } from './pointer';
+import { visibleScroller } from './screen';
 
 /** On the window's body while an image is dragged: grabbing cursor, no tooltips (styles.css). */
 export const BODY_CLASS = 'itw-dragging';
@@ -42,6 +52,12 @@ export const BODY_CLASS = 'itw-dragging';
 export const SOURCE_CLASS = 'itw-drag-source';
 /** On the dragged image's embed for a moment, to measure the note without it: not drawn (styles.css). */
 const MEASURE_CLASS = 'itw-drag-measure';
+/** On the embed a finger presses: no text selection and no system callout for the picture (styles.css). */
+const PRESSED_CLASS = 'itw-drag-pressed';
+/** On the embed a finger has picked up, until it moves: outlined (styles.css). */
+const LIFTED_CLASS = 'itw-drag-lifted';
+/** The buzz as a finger picks an image up, in milliseconds. */
+const PICK_UP_BUZZ = 50;
 /**
  * The copy of a wrapped picture that stand-ins.ts draws while the picture's own line is not drawn. Floated
  * like the picture; `data-from` holds the position of its link.
@@ -81,7 +97,16 @@ export class ImageDrag {
 	private readonly startY: number;
 	/** The view at the press, in the note as it was then: undo goes back to it (commit). */
 	private readonly viewAtPress: ViewMark;
+	/** A finger (touch or pen) rather than a mouse: it picks the image up with a long press. */
+	private readonly finger: boolean;
+	/** Whether the editor had the keyboard focus at the press. */
+	private readonly hadFocus: boolean;
 
+	/** A finger: the image has been picked up (the long press is over), and where the finger was then. */
+	private lifted = false;
+	private liftX = 0;
+	private liftY = 0;
+	private holdTimer = 0;
 	private dragging = false;
 	private quiet = false;
 	private x: number;
@@ -120,6 +145,8 @@ export class ImageDrag {
 		this.startX = this.x = start.clientX;
 		this.startY = this.y = start.clientY;
 		this.viewAtPress = markView(view);
+		this.finger = start.pointerType !== 'mouse';
+		this.hadFocus = view.hasFocus;
 		// The browser must not start its own image drag during this press. Cancelling its dragstart (index.ts)
 		// is not enough in a pop-out window: Obsidian relays that event to the main window before it gets to
 		// the editor, and its drag manager then sets a grabbing cursor that only a dragend would clear. An image
@@ -127,14 +154,24 @@ export class ImageDrag {
 		// setting off, or with a modifier key) and its click are untouched.
 		this.draggableBefore = img.getAttribute('draggable');
 		img.setAttribute('draggable', 'false');
-		this.pointer = trackPointer(this.doc, start, {
-			onMove: (event) => this.onMove(event),
-			onEnd: (event) => this.onEnd(event),
-			onCancel: () => this.onCancel(),
-		});
+		const touch = this.finger ? { holding: () => this.lifted, onLongPress: () => this.lift() } : undefined;
+		this.pointer = trackPointer(
+			this.doc,
+			start,
+			{
+				onMove: (event) => this.onMove(event),
+				onEnd: (event) => this.onEnd(event),
+				onCancel: () => this.onCancel(),
+			},
+			touch,
+		);
+		if (this.finger) {
+			embed.addClass(PRESSED_CLASS);
+			this.holdTimer = this.win.setTimeout(() => this.lift(), LONG_PRESS_MS);
+		}
 	}
 
-	/** Ends the gesture without writing anything (editor destroyed, plugin unloaded, mode changed). */
+	/** Ends the gesture without writing anything (a swipe, editor destroyed, plugin unloaded, mode changed). */
 	cancel(): void {
 		this.quiet = true;
 		this.pointer.cancel();
@@ -143,11 +180,39 @@ export class ImageDrag {
 	private onMove(event: PointerEvent): void {
 		this.x = event.clientX;
 		this.y = event.clientY;
+		if (this.finger && !this.lifted) {
+			// Moving before the long press is over: a swipe. The browser scrolls the note; this press is not followed.
+			if (pastSlop(this.x - this.startX, this.y - this.startY)) this.cancel();
+			return;
+		}
 		if (!this.dragging) {
-			if (!pastThreshold(this.x - this.startX, this.y - this.startY)) return;
+			const moved = this.finger
+				? pastSlop(this.x - this.liftX, this.y - this.liftY)
+				: pastThreshold(this.x - this.startX, this.y - this.startY);
+			if (!moved) return;
 			this.begin();
 		}
 		this.schedule();
+	}
+
+	/**
+	 * A finger has rested on the image long enough (or the browser recognised a long press first): the image is
+	 * picked up. From now on the browser does not scroll (pointer.ts), and moving drags the image.
+	 */
+	private lift(): void {
+		if (this.lifted || this.pointer.finished) return;
+		this.lifted = true;
+		this.win.clearTimeout(this.holdTimer);
+		this.liftX = this.x;
+		this.liftY = this.y;
+		this.embed.addClass(LIFTED_CLASS);
+		showPickUp(this.doc, this.x, this.y);
+		try {
+			// Not every device can buzz, and a browser may refuse before the first tap on the page.
+			this.win.navigator.vibrate?.(PICK_UP_BUZZ);
+		} catch {
+			/* no buzz */
+		}
 	}
 
 	private begin(): void {
@@ -162,14 +227,22 @@ export class ImageDrag {
 		// Followed on the editor, not the image: the image's widget can be redrawn while the note scrolls.
 		this.pointer.capture(this.view.dom);
 		this.doc.body.addClass(BODY_CLASS);
+		this.embed.removeClass(LIFTED_CLASS);
 		this.embed.addClass(SOURCE_CLASS);
-		this.ghost = new DragGhost(this.doc, this.img);
+		this.ghost = new DragGhost(this.doc, this.img, this.finger);
 		this.indicator = new DropIndicator(this.doc);
 		this.view.scrollDOM.addEventListener('scroll', () => this.schedule(), { passive: true, signal: this.listeners.signal });
 	}
 
 	private onEnd(event: PointerEvent): void {
 		if (!this.dragging) {
+			if (this.lifted) {
+				// Picked up and put down again without moving: nothing moves, and the image is left selected.
+				swallowNextClick(this.doc, true, true);
+				this.done();
+				this.select();
+				return;
+			}
 			// A click: Obsidian selects the image, or opens it when it was selected already.
 			this.done();
 			return;
@@ -182,7 +255,7 @@ export class ImageDrag {
 			placement = this.placement;
 		} finally {
 			// Whatever happens, the cursor and the overlays are put back.
-			swallowNextClick(this.doc, true);
+			swallowNextClick(this.doc, true, this.finger);
 			this.cleanup();
 		}
 		if (placement) this.commit(placement);
@@ -190,9 +263,23 @@ export class ImageDrag {
 
 	private onCancel(): void {
 		if (this.dragging) {
-			if (!this.quiet) swallowNextClick(this.doc, false);
+			if (!this.quiet) swallowNextClick(this.doc, false, this.finger);
 			this.cleanup();
-		} else this.done();
+		} else {
+			// A finger that picked the image up may still be down (Escape): lifting it must not select or open the image.
+			if (this.lifted && !this.quiet) swallowNextClick(this.doc, false, true);
+			this.done();
+		}
+	}
+
+	/**
+	 * Selects the pressed image as a tap would, unless it is selected already (a second tap would open it).
+	 * Obsidian selects an image when it is clicked, so it is sent a click; swallowNextClick lets that one through.
+	 */
+	private select(): void {
+		const { img } = this;
+		if (!img.isConnected || this.embed.hasClass(SELECTED_CLASS)) return;
+		img.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: this.win }));
 	}
 
 	private cleanup(): void {
@@ -212,6 +299,10 @@ export class ImageDrag {
 	private done(): void {
 		if (this.draggableBefore === null) this.img.removeAttribute('draggable');
 		else this.img.setAttribute('draggable', this.draggableBefore);
+		if (this.finger) {
+			this.win.clearTimeout(this.holdTimer);
+			this.embed.removeClass(PRESSED_CLASS, LIFTED_CLASS);
+		}
 		this.onDone();
 	}
 
@@ -220,12 +311,21 @@ export class ImageDrag {
 		if (!this.frame && this.dragging) this.frame = this.win.requestAnimationFrame(this.onFrame);
 	}
 
+	/**
+	 * The part of the scroller the drag aims at and scrolls from, top to bottom. On a phone or tablet, Obsidian's
+	 * bars, the system's and the keyboard can cover the scroller's edges (screen.ts).
+	 */
+	private band(scroller: DOMRect): Band {
+		return Platform.isMobile ? visibleScroller(this.view) : { top: scroller.top, bottom: scroller.bottom };
+	}
+
 	private readonly onFrame = (): void => {
 		this.frame = 0;
 		if (!this.dragging || this.pointer.finished) return;
 		const scroller = this.view.scrollDOM;
 		const rect = scroller.getBoundingClientRect();
-		const speed = this.inThisPane(rect) ? scrollSpeed(this.y, rect.top, rect.bottom) : 0;
+		const band = this.band(rect);
+		const speed = this.inThisPane(rect) ? scrollSpeed(this.y, band.top, band.bottom) : 0;
 		if (speed !== 0) {
 			const before = scroller.scrollTop;
 			scroller.scrollTop = before + Math.sign(speed) * Math.max(1, Math.round(Math.abs(speed)));
@@ -302,10 +402,12 @@ export class ImageDrag {
 		if (!this.ghost || !this.indicator) return;
 		this.ghost.move(this.x, this.y);
 		this.redimSource();
-		const scroller = this.view.scrollDOM.getBoundingClientRect();
+		const rect = this.view.scrollDOM.getBoundingClientRect();
+		// The part of the scroller that can be seen: on a desktop, all of it.
+		const scroller = { ...this.band(rect), left: rect.left, right: rect.right };
 		const column = this.view.contentDOM.getBoundingClientRect();
 		// Only this pane: over another pane or a sidebar nothing is dropped.
-		if (!this.inThisPane(scroller)) return this.clear();
+		if (!this.inThisPane(rect)) return this.clear();
 		const documentTop = this.view.documentTop;
 		const y = clamp(this.y, scroller.top, scroller.bottom);
 		// Over code, a table, a quote, a later list item or frontmatter there is nowhere to drop.
@@ -459,7 +561,8 @@ export class ImageDrag {
 		// the line at the top still (or the bottom of the note, when scrolled to the end) and move the image.
 		const doc = view.state.doc;
 		if (plan.linkLine < doc.lines) keepLineAt(view, doc.line(plan.linkLine + 1).from, offset);
-		// A pointer gesture can leave focus on the body; put it back so Undo works at once.
-		view.focus();
+		// A pointer gesture can leave focus on the body; put it back so Undo works at once. A finger leaves the focus
+		// as it was: on a phone or tablet, focusing the editor opens the on-screen keyboard.
+		if (!this.finger || this.hadFocus) view.focus();
 	}
 }

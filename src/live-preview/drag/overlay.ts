@@ -4,25 +4,44 @@
 //
 // The shape (a body-level ghost and a line-or-box indicator moved with setCssProps) follows Adjustable
 // Media (src/view/dragGhost.ts, src/view/blockDrag.ts createDropIndicator), MIT, (c) 2026 Yi-luo-hua.
-import { fitWithin } from './geometry';
+import { fitWithin, ghostByFinger } from './geometry';
 
 /** The ghost is never bigger than this, so it does not hide the note. */
 const GHOST_MAX = 240;
 /** Offset from the pointer, so the ghost never covers the point being dropped on. */
 const GHOST_OFFSET = 16;
+/** Under a finger the ghost is smaller: it is drawn above the finger, over the part of the note being aimed at. */
+const FINGER_GHOST_MAX = 140;
+/** How long the ring shown as a finger picks an image up lasts (styles.css), in milliseconds. */
+const PICK_UP_MS = 300;
 
 export class DragGhost {
 	private readonly el: HTMLElement;
+	private readonly win: Window;
+	private readonly size: { width: number; height: number };
 
-	constructor(doc: Document, img: HTMLImageElement) {
+	/** With `finger`, the ghost goes above the point instead of beside it, so the finger does not hide it. */
+	constructor(
+		doc: Document,
+		img: HTMLImageElement,
+		private readonly finger = false,
+	) {
 		const rect = img.getBoundingClientRect();
-		const size = fitWithin(rect.width || img.naturalWidth, rect.height || img.naturalHeight, GHOST_MAX, GHOST_MAX);
+		const max = finger ? FINGER_GHOST_MAX : GHOST_MAX;
+		const size = (this.size = fitWithin(rect.width || img.naturalWidth, rect.height || img.naturalHeight, max, max));
+		this.win = doc.defaultView ?? window;
 		this.el = doc.body.createDiv({ cls: 'itw-drag-ghost' });
 		this.el.createEl('img', { attr: { src: img.currentSrc || img.src, alt: '', draggable: 'false' } });
 		this.el.setCssProps({ '--itw-ghost-width': `${size.width}px`, '--itw-ghost-height': `${size.height}px` });
 	}
 
 	move(x: number, y: number): void {
+		if (this.finger) {
+			const { width, height } = this.size;
+			const at = ghostByFinger(x, y, width, height, { width: this.win.innerWidth, height: this.win.innerHeight });
+			this.el.setCssProps({ '--itw-ghost-x': `${at.left}px`, '--itw-ghost-y': `${at.top}px` });
+			return;
+		}
 		this.el.setCssProps({ '--itw-ghost-x': `${x + GHOST_OFFSET}px`, '--itw-ghost-y': `${y + GHOST_OFFSET}px` });
 	}
 
@@ -87,4 +106,17 @@ export class DropIndicator {
 		this.box.remove();
 		this.label.remove();
 	}
+}
+
+/**
+ * A ring that spreads from the finger as it picks an image up, like the one Obsidian's own long-press drags
+ * show on mobile. It removes itself.
+ */
+export function showPickUp(doc: Document, x: number, y: number): void {
+	const el = doc.body.createDiv({ cls: 'itw-pick-up' });
+	el.setCssProps({ '--itw-pick-up-x': `${x}px`, '--itw-pick-up-y': `${y}px` });
+	// Laid out small first, so that the class below makes it spread (a CSS transition, styles.css).
+	el.getBoundingClientRect();
+	el.addClass('is-spreading');
+	(doc.defaultView ?? window).setTimeout(() => el.remove(), PICK_UP_MS + 50);
 }

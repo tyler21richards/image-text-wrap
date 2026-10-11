@@ -10,10 +10,72 @@ export const SCROLL_EDGE = 48;
 /** Fastest auto-scroll, in pixels per animation frame. */
 export const SCROLL_SPEED = 24;
 
+/** Touch and pen: a finger that rests this long on an image picks it up, in milliseconds. */
+export const LONG_PRESS_MS = 500;
+/**
+ * Touch and pen: how far a resting finger may wander, in pixels. Further before the image is picked up, and the
+ * press is a swipe that scrolls the note; further after it, and the image is dragged.
+ */
+export const LONG_PRESS_SLOP = 8;
+/** Touch and pen: the gap between the finger and the copy of the image drawn above it. */
+export const FINGER_GAP = 32;
+
 export type Side = 'left' | 'right';
 
 export function pastThreshold(dx: number, dy: number): boolean {
 	return Math.hypot(dx, dy) > DRAG_THRESHOLD;
+}
+
+export function pastSlop(dx: number, dy: number): boolean {
+	return Math.hypot(dx, dy) > LONG_PRESS_SLOP;
+}
+
+/**
+ * Where a ghost of `width` x `height` goes for a finger at (x, y), so the finger does not hide it: centred
+ * above the finger, or below it when there is no room above. It stays inside the window (`screen`).
+ */
+export function ghostByFinger(
+	x: number,
+	y: number,
+	width: number,
+	height: number,
+	screen: { width: number; height: number },
+	gap = FINGER_GAP,
+): { left: number; top: number } {
+	const left = clamp(x - width / 2, 0, screen.width - width);
+	const above = y - gap - height;
+	const top = above >= 0 ? above : clamp(y + gap, 0, screen.height - height);
+	return { left, top };
+}
+
+export interface Band {
+	top: number;
+	bottom: number;
+}
+
+/** A box on screen, as getBoundingClientRect gives it. */
+export interface Box extends Band {
+	left: number;
+	right: number;
+}
+
+/**
+ * The part of a scroller that can be seen, top to bottom: inside the `viewport` (what the on-screen keyboard and
+ * the system bars leave), and clear of the bars drawn over the scroller (`covers`). A cover over the upper half of
+ * the scroller ends the band at its bottom, one over the lower half at its top; covers that miss the scroller are
+ * ignored. When nothing would be left, the whole scroller.
+ */
+export function visibleBand(scroller: Box, viewport: Band, covers: readonly Box[]): Band {
+	let top = Math.max(scroller.top, viewport.top);
+	let bottom = Math.min(scroller.bottom, viewport.bottom);
+	const middle = (scroller.top + scroller.bottom) / 2;
+	for (const c of covers) {
+		if (c.bottom <= c.top || c.right <= c.left) continue;
+		if (c.bottom <= scroller.top || c.top >= scroller.bottom || c.right <= scroller.left || c.left >= scroller.right) continue;
+		if ((c.top + c.bottom) / 2 < middle) top = Math.max(top, c.bottom);
+		else bottom = Math.min(bottom, c.top);
+	}
+	return bottom > top ? { top, bottom } : { top: scroller.top, bottom: scroller.bottom };
 }
 
 /** The half of the note column the pointer is in. */
