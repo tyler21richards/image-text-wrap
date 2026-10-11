@@ -2,8 +2,9 @@
 //
 // Adapted from Adjustable Media (src/view/pointer.ts, trackPointer), MIT, (c) 2026 Yi-luo-hua. Changes:
 // every listener hangs on one AbortController, so the gesture can be cancelled from outside (editor
-// destroyed, plugin unloaded); and the pointer is captured only when the caller asks (once the press has
-// become a drag), because capturing at the press would retarget the click that selects the image.
+// destroyed, plugin unloaded); the pointer is captured only when the caller asks (once the press has
+// become a drag), because capturing at the press would retarget the click that selects the image; and the
+// gesture ends by itself when the editor it is in stops being drawn (Reading view, a tab in the background).
 //
 // A finger (a touch, or a pen on a phone or tablet) is followed the same way, with what a long press needs on top
 // (TouchHold).
@@ -12,9 +13,9 @@ export interface PointerHandlers {
 	onMove(event: PointerEvent): void;
 	onEnd(event: PointerEvent): void;
 	/**
-	 * The gesture was interrupted (Escape, pointercancel, lost capture, a missed release, a native drag, and for a
-	 * finger a second finger or the app going to the background). `gone`: the pointer itself was cancelled
-	 * (pointercancel), so no release and no click will follow.
+	 * The gesture was interrupted (Escape, pointercancel, lost capture, a missed release, a native drag, the element
+	 * it belongs to no longer drawn, and for a finger a second finger or the app going to the background). `gone`:
+	 * the pointer itself was cancelled (pointercancel), so no release and no click will follow.
 	 */
 	onCancel(gone: boolean): void;
 }
@@ -42,9 +43,16 @@ export interface TrackedPointer {
  * Starts following the gesture that `start` began, on `doc` (the image's own document, for pop-out
  * windows). It ends exactly once, through onEnd or onCancel, after every listener is removed. No text
  * is selected while it lasts: in Live Preview a selection reaching the link would show its source in
- * place of the image.
+ * place of the image. With `within` (the editor the gesture is in), it is cancelled as soon as that is
+ * no longer drawn (endWhenHidden).
  */
-export function trackPointer(doc: Document, start: PointerEvent, handlers: PointerHandlers, touch?: TouchHold): TrackedPointer {
+export function trackPointer(
+	doc: Document,
+	start: PointerEvent,
+	handlers: PointerHandlers,
+	touch?: TouchHold,
+	within?: Element,
+): TrackedPointer {
 	const controller = new AbortController();
 	const { signal } = controller;
 	let finished = false;
@@ -100,6 +108,7 @@ export function trackPointer(doc: Document, start: PointerEvent, handlers: Point
 	doc.addEventListener('selectstart', (event) => event.preventDefault(), { capture: true, signal });
 	doc.addEventListener('dragstart', onDragStart, { signal });
 	if (touch) followFinger(doc, start, touch, () => finish(null), signal);
+	if (within) endWhenHidden(doc, within, () => finish(null), signal);
 
 	return {
 		capture(el: HTMLElement) {
@@ -177,6 +186,28 @@ function followFinger(doc: Document, start: PointerEvent, touch: TouchHold, canc
 		},
 		{ signal },
 	);
+}
+
+/**
+ * Cancels the gesture as soon as `el` (the editor) is no longer drawn: hidden by display: none on it or on a parent,
+ * as when its note is switched to Reading view (Obsidian hides the editor; its state, Live Preview included, stays as
+ * it was) or its tab is put in the background, or taken out of the page. Nothing else would end the gesture then:
+ * a finger or a mouse that holds still sends no events, and the ghost and the drop line would stay over whatever
+ * is shown now. Size changes that leave it drawn (a rotation, the on-screen keyboard) change nothing.
+ */
+function endWhenHidden(doc: Document, el: Element, cancel: () => void, signal: AbortSignal): void {
+	// The observer of the editor's own window, so a pop-out window delivers its notifications.
+	const win = doc.defaultView ?? window;
+	const observer = new win.ResizeObserver(() => {
+		if (!isShown(el)) cancel();
+	});
+	observer.observe(el);
+	signal.addEventListener('abort', () => observer.disconnect(), { once: true });
+}
+
+/** Whether `el` is drawn: in the page, with a box (display: none on it or on a parent leaves it none). */
+export function isShown(el: Element): boolean {
+	return el.isConnected && el.getClientRects().length > 0;
 }
 
 /**

@@ -230,6 +230,23 @@ export default async ({ page, openNote, watchErrors, args }) => {
 	};
 	const center = (g) => ({ x: Math.round(g.img.left + g.img.width / 2), y: Math.round(g.img.top + g.img.height / 2) });
 	const clean = (s) => s.bodyClasses.length === 0 && s.overlays === 0 && s.dimmed === 0;
+	/** What a press leaves on images anywhere in the window (pressed, picked up), and any menu or image viewer. */
+	const leftovers = () =>
+		page.evaluate(() => ({
+			pressed: document.querySelectorAll('.itw-drag-pressed').length,
+			lifted: document.querySelectorAll('.itw-drag-lifted').length,
+			menu: !!document.querySelector('.menu'),
+			viewer: !!document.querySelector('.lightbox'),
+		}));
+	/** Back to one pane with the fixture in Live Preview, after a test that switched, opened or closed panes. */
+	const restore = async () => {
+		await page.evaluate(() => {
+			const leaves = [];
+			app.workspace.iterateRootLeaves((leaf) => leaves.push(leaf));
+			for (const leaf of leaves.slice(1)) leaf.detach();
+		});
+		await openNote(page, d.FIXTURE, 'live');
+	};
 	// Undo holds the view for a second while the note settles (keep-scroll.ts), so the next test waits it out.
 	const undo = async () => {
 		await page.evaluate(() => app.commands.executeCommandById('editor:undo'));
@@ -611,6 +628,102 @@ export default async ({ page, openNote, watchErrors, args }) => {
 				evidence: `dragging: ghost=${!!during.ghost}; after going back (now on "${file}"): overlays=${cancelled.overlays}, body classes ${JSON.stringify(cancelled.bodyClasses)}; after lifting: overlays=${after.overlays}; the note it started in unchanged=${unchanged}`,
 			};
 		});
+
+		// N10: the editor going out of sight, or away, while the finger still holds the image ends the press at once,
+		// with the finger still: no ghost, drop line, outline or label over what is shown now, nothing dimmed or
+		// outlined, nothing written; moving the finger afterwards drags nothing, and lifting it opens nothing. Reading
+		// view and another tab only hide the editor (its state does not change); another note in the pane and closing
+		// the pane are the controls. Keys and commands stand in for an iPad's or a tablet's keyboard, the tab bar and
+		// the pane's menu (a finger holding the image leaves only a second finger or a keyboard to do them with).
+		for (const [name, how, lift] of [
+			['Reading view (Cmd+E) during a drag ends it at once', 'key', false],
+			['Reading view after a pick-up ends the press at once, and moving the finger then drags nothing', 'command', true],
+			['another tab in front during a drag ends it at once', 'tab', false],
+			['another note in this pane during a drag ends it at once', 'note', false],
+			['closing the pane during a drag ends it at once', 'close', false],
+		]) {
+			await run(name, async () => {
+				try {
+					await showLine(L.landscape, 30);
+					const g = await d.geometry(page, L.landscape);
+					const c = center(g);
+					await tp.down(c.x, c.y);
+					await d.sleep(HOLD);
+					let f = c;
+					if (!lift) {
+						f = { x: c.x + 60, y: c.y + 150 };
+						await tp.moveTo(c.x, c.y, f.x, f.y, 10, 20);
+					}
+					await d.sleep(150);
+					const during = await d.dragState(page);
+					const held = await leftovers();
+					// The editor the image was pressed in, to see afterwards whether it is still drawn, or still in the page.
+					await page.evaluate(() => {
+						window.__itwPressedIn = app.workspace.activeLeaf.view.editor.cm.dom;
+					});
+					if (how === 'key') await page.keyboard.press('Meta+E');
+					else if (how === 'command') await page.evaluate(() => app.commands.executeCommandById('markdown:toggle-preview'));
+					else if (how === 'tab')
+						await page.evaluate(() =>
+							app.workspace.getLeaf('tab').openFile(app.vault.getAbstractFileByPath('Plain images.md'), { state: { mode: 'source', source: false }, active: true }),
+						);
+					else if (how === 'note')
+						await page.evaluate(() => app.workspace.activeLeaf.openFile(app.vault.getAbstractFileByPath('Plain images.md'), { state: { mode: 'source', source: false } }));
+					else await page.evaluate(() => app.workspace.activeLeaf.detach());
+					// At once: two frames later, the finger not moved.
+					await d.frames(page, 2);
+					const atOnce = await d.dragState(page);
+					const atOnceLeft = await leftovers();
+					const shown = await page.evaluate(() => {
+						const editor = window.__itwPressedIn;
+						delete window.__itwPressedIn;
+						return {
+							mode: app.workspace.activeLeaf?.view?.getMode?.() ?? null,
+							file: app.workspace.getActiveFile()?.path ?? null,
+							editorInPage: editor.isConnected,
+							editorDrawn: editor.getClientRects().length > 0,
+						};
+					});
+					const switched =
+						how === 'key' || how === 'command'
+							? shown.mode === 'preview' && shown.file === d.FIXTURE && !shown.editorDrawn
+							: how === 'tab'
+								? shown.file === 'Plain images.md' && !shown.editorDrawn
+								: how === 'note'
+									? shown.file === 'Plain images.md'
+									: !shown.editorInPage;
+					await d.sleep(300);
+					const later = await d.dragState(page);
+					// The finger goes on moving, then lifts.
+					await tp.moveTo(f.x, f.y, f.x + 40, f.y + 120, 8, 20);
+					await d.sleep(150);
+					const moved = await d.dragState(page);
+					await tp.up();
+					await d.sleep(1000);
+					const after = await d.dragState(page);
+					const afterLeft = await leftovers();
+					const fileText = await page.evaluate(() => app.vault.read(app.vault.getAbstractFileByPath('Fixture.md')));
+					const started = lift ? held.lifted === 1 && !during.ghost : !!during.ghost;
+					const none = (s, l) => clean(s) && l.pressed === 0 && l.lifted === 0;
+					return {
+						pass:
+							started &&
+							switched &&
+							none(atOnce, atOnceLeft) &&
+							clean(later) &&
+							clean(moved) &&
+							none(after, afterLeft) &&
+							!afterLeft.menu &&
+							!afterLeft.viewer &&
+							fileText === original,
+						evidence: `${lift ? `picked up: lifted=${held.lifted}` : `dragging: ghost=${!!during.ghost}, dimmed=${during.dimmed}`}; then ${how} (now ${JSON.stringify(shown)}, switched=${switched}); two frames later, finger still: overlays=${atOnce.overlays}, body classes ${JSON.stringify(atOnce.bodyClasses)}, dimmed=${atOnce.dimmed}, pressed=${atOnceLeft.pressed}, lifted=${atOnceLeft.lifted}; 300 ms later: overlays=${later.overlays}; after moving the finger: overlays=${moved.overlays}, ghost=${!!moved.ghost}, body classes ${JSON.stringify(moved.bodyClasses)}; after lifting: overlays=${after.overlays}, pressed=${afterLeft.pressed}, menu=${afterLeft.menu}, viewer=${afterLeft.viewer}; Fixture.md on disk unchanged=${fileText === original}`,
+					};
+				} finally {
+					await tp.cancel().catch(() => {});
+					await restore();
+				}
+			});
+		}
 
 		await run('with "Move images by dragging" off, a long press does nothing and the finger scrolls', async () => {
 			await page.evaluate(async () => {

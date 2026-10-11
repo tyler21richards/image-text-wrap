@@ -26,6 +26,9 @@ class DragHandler implements PluginValue {
 		view.contentDOM.addEventListener('dragstart', this.onDragStart, { capture: true });
 	}
 
+	// Source mode turns Live Preview off in the editor's state. Reading view and another tab only hide the editor,
+	// which the gesture watches for itself (pointer.ts, endWhenHidden); another note in this pane, or the pane closed,
+	// destroys this handler.
 	update(update: ViewUpdate): void {
 		if (this.drag && !update.state.field(editorLivePreviewField, false)) this.cancel();
 	}
