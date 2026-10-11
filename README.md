@@ -25,6 +25,8 @@ Click an image in Live Preview. A toolbar appears just above it (or below it, wh
 
 Click the highlighted wrap button again to turn wrapping off. Every change is one undo step (<kbd>Ctrl/Cmd</kbd>+<kbd>Z</kbd>).
 
+A wrapped picture wraps wherever it sits in the text: alone on its line, on a line with other wrapped pictures, or inside a sentence, where it moves to its side and the text flows around it. This works for pictures from the web too.
+
 The toolbar never covers Obsidian's own image controls. You can still resize an image by dragging its corner, zoom it, and open it in the image viewer.
 
 ### Moving an image
@@ -34,6 +36,7 @@ Press on an image and drag it. A copy follows the pointer, and a line shows wher
 - If the image wraps text, drop it on the left or right half of the note to choose its side. The text from that block onwards flows around it.
 - If the image does not wrap text, it moves there as an ordinary image.
 - Move near the top or bottom edge to scroll. Press <kbd>Esc</kbd> to cancel.
+- Undo (<kbd>Ctrl/Cmd</kbd>+<kbd>Z</kbd>) puts the image back and returns to where it was, even after a drag that scrolled the note.
 
 ### Other ways to choose a layout
 
@@ -69,7 +72,7 @@ The size stays last, so Obsidian keeps applying it. If you remove the plugin, yo
 
 ## Known limits
 
-- Images inside tables, callouts, quotes, lists and headings stay in line with text. The toolbar and dragging do not act on them.
+- Images inside tables, callouts, quotes, lists, footnotes and headings stay in line with text, also on a line that continues a list item, quote or footnote without repeating its marker. The toolbar and dragging do not act on them.
 - Images in an embedded note (`![[Other note]]`) are shown with their layout, but you change them in that note itself: the toolbar and dragging do not act on them where the note is embedded.
 - A dragged image lands at the start of a block, not in the middle of a paragraph, because a note is one stream of text.
 - Live Preview shows a blank line as slightly taller than the paragraph spacing in Reading view, so the text beside a tall image can break at a slightly different word.
@@ -77,12 +80,18 @@ The size stays last, so Obsidian keeps applying it. If you remove the plugin, yo
 - Very small images (about 32 pixels or less) are covered by Obsidian's own resize corner, so a click does not select them, even without this plugin. Use the commands to change their layout.
 - The first time you scroll up through a long note in Reading view, text beside a wrapped image can shift once while Obsidian measures sections it has not shown yet.
 - If you type layout words by hand, write them exactly as shown above, in lower case and without spaces around the `|`.
+- When a picture wrapped left and one wrapped right overlap with only a narrow space between them, the text in that space can break inside words, a letter or two per line. Make one of the pictures smaller, or move one of them.
+- Screen readers read an image's layout words as part of its description (its alt text), because that is where the layout is stored. Obsidian's image viewer shows only the caption or the file name.
 - PDF export uses Arial unless you set a text font in Obsidian's Appearance settings, so line breaks may differ from the screen.
 - Desktop only for now. Phone and tablet support is planned.
 
+## Privacy
+
+Image Text Wrap makes no network requests and collects no data. Everything it does stays in your notes.
+
 ## Installing
 
-Image Text Wrap is in beta and not yet in Obsidian's community plugin directory. It needs Obsidian 1.13 or later, on desktop.
+Image Text Wrap is in beta and not yet in Obsidian's community plugin directory. It needs Obsidian 1.13.1 or later, on desktop.
 
 If you have never used community plugins in this vault, first open **Settings → Community plugins** and choose **Turn on community plugins** (called **Exit Restricted mode** in recent versions of Obsidian). Until you do, that page has no Browse button and no list of installed plugins.
 
