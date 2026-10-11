@@ -3,6 +3,8 @@
 //
 // Environment:
 //   OBSIDIAN_APP     path to Obsidian.app (required unless the default below exists)
+//   ITW_VISIBLE=1    show the windows (by default on macOS they start in the background, transparent and
+//                    click-through, so tests do not disturb whoever is using the computer)
 //   ITW_STATE_DIR    where profiles and vault copies live (default: ./.e2e)
 //   ITW_INSTANCE     instance number, 0 by default. Each instance has its own port, profile and vault copy,
 //                    so several can run side by side.
@@ -83,13 +85,37 @@ export async function launch(cfg = config(), { fresh = false } = {}) {
 	syncVault(cfg);
 	installPlugin(cfg);
 	writeProfile(cfg);
-	const child = spawn(cfg.binary, [`--remote-debugging-port=${cfg.port}`, `--user-data-dir=${cfg.profile}`], {
-		detached: true,
-		stdio: 'ignore',
-	});
+	const flags = [`--remote-debugging-port=${cfg.port}`, `--user-data-dir=${cfg.profile}`];
+	// Quiet mode (the default on macOS): start in the background, so the app does not take focus from
+	// whoever is using the computer. ITW_VISIBLE=1 starts it normally.
+	const child =
+		process.platform === 'darwin' && !visible()
+			? spawn('open', ['-n', '-g', '-a', cfg.app, '--args', ...flags], { detached: true, stdio: 'ignore' })
+			: spawn(cfg.binary, flags, { detached: true, stdio: 'ignore' });
 	child.unref();
-	for (let i = 0; i < 100 && !(await cdpUp(cfg.port)); i++) await sleep(200);
+	for (let i = 0; i < 100 && !(await cdpUp(cfg.port)); i++) await sleep(100);
 	if (!(await cdpUp(cfg.port))) throw new Error(`Obsidian did not open DevTools port ${cfg.port}`);
+	if (!visible()) await hideEarly(cfg);
+}
+
+/** Hides the windows as soon as any page can reach Electron, before the vault has finished loading. */
+async function hideEarly(cfg) {
+	const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cfg.port}`).catch(() => null);
+	if (!browser) return;
+	try {
+		for (let i = 0; i < 50; i++) {
+			for (const page of browser.contexts().flatMap((c) => c.pages())) {
+				const ready = await page.evaluate(() => !!window.require?.('electron')?.remote).catch(() => false);
+				if (ready) {
+					await hideWindows(page);
+					return;
+				}
+			}
+			await sleep(100);
+		}
+	} finally {
+		await browser.close().catch(() => {});
+	}
 }
 
 /**
@@ -98,6 +124,7 @@ export async function launch(cfg = config(), { fresh = false } = {}) {
  */
 async function prepareWindow(page) {
 	await page.evaluate(() => window.electronWindow?.setBackgroundThrottling(false)).catch(() => {});
+	if (!visible()) await hideWindows(page);
 	try {
 		const session = await page.context().newCDPSession(page);
 		await session.send('Emulation.setFocusEmulationEnabled', { enabled: true });
@@ -106,6 +133,50 @@ async function prepareWindow(page) {
 	} catch {
 		/* older Chromium: ignore */
 	}
+}
+
+const visible = () => process.env.ITW_VISIBLE === '1';
+
+/**
+ * Quiet mode: this instance never becomes the active app (it would take keystrokes from whoever is using
+ * the computer), every window of it, including pop-outs opened later, is fully transparent and
+ * click-through, and its Dock icon is hidden. The windows stay shown (inactive), so they keep rendering:
+ * layout, requestAnimationFrame, real CDP input (with focus emulation) and screenshots work as before.
+ * Obsidian activates itself at startup and when it opens a window, so each activation is undone at once.
+ */
+async function hideWindows(page) {
+	await page
+		.evaluate(() => {
+			const remote = window.require('electron').remote;
+			const app = remote.app;
+			const quiet = (w) => {
+				try {
+					w.setOpacity(0);
+					w.setIgnoreMouseEvents(true);
+					w.setBackgroundThrottling(false);
+					if (!w.isVisible() || w.isFocused()) w.showInactive();
+				} catch {
+					/* window already closed */
+				}
+			};
+			const deactivate = () => {
+				// Hiding the app hands activation back to the app the person was using; the windows are then
+				// shown again without activating it.
+				app.hide();
+				setTimeout(() => remote.BrowserWindow.getAllWindows().forEach(quiet), 150);
+			};
+			app.setActivationPolicy('accessory');
+			app.dock?.hide();
+			remote.BrowserWindow.getAllWindows().forEach(quiet);
+			if (!window.__itwQuiet) {
+				window.__itwQuiet = true;
+				app.on('browser-window-created', (_e, w) => quiet(w));
+				app.on('browser-window-focus', () => deactivate());
+				app.on('did-become-active', () => deactivate());
+			}
+			deactivate();
+		})
+		.catch(() => {});
 }
 
 /** Connects and returns { browser, page } for the vault window (not the starter window). */
