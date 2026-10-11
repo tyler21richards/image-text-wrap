@@ -91,7 +91,7 @@ Image Text Wrap makes no network requests and collects no data. Everything it do
 
 ## Installing
 
-Image Text Wrap is in beta and not yet in Obsidian's community plugin directory. It needs Obsidian 1.13.1 or later, on desktop.
+Image Text Wrap is not yet in Obsidian's community plugin directory, so install it with BRAT or by hand. It needs Obsidian 1.13.1 or later, on desktop.
 
 If you have never used community plugins in this vault, first open **Settings → Community plugins** and choose **Turn on community plugins** (called **Exit Restricted mode** in recent versions of Obsidian). Until you do, that page has no Browse button and no list of installed plugins.
 
