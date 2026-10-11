@@ -90,7 +90,7 @@ export async function launch(cfg = config(), { fresh = false } = {}) {
 	// whoever is using the computer. ITW_VISIBLE=1 starts it normally.
 	const child =
 		process.platform === 'darwin' && !visible()
-			? spawn('open', ['-n', '-g', '-a', cfg.app, '--args', ...flags], { detached: true, stdio: 'ignore' })
+			? spawn('open', ['-n', '-g', '-j', '-a', cfg.app, '--args', ...flags], { detached: true, stdio: 'ignore' })
 			: spawn(cfg.binary, flags, { detached: true, stdio: 'ignore' });
 	child.unref();
 	for (let i = 0; i < 100 && !(await cdpUp(cfg.port)); i++) await sleep(100);
