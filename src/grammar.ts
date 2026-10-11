@@ -34,12 +34,19 @@ export interface ImageLink {
 	layout: Layout;
 }
 
-const WRAP_TOKENS: Record<string, Wrap> = {
-	'wrap-left': 'left',
-	'wrap-right': 'right',
-	'wrap-block': 'block',
-};
-const GAP_TOKENS: Record<string, Gap> = { 'gap-0': 0, 'gap-8': 8, 'gap-16': 16, 'gap-24': 24 };
+// Maps, not object literals: a caption such as "constructor" or "__proto__" must not find a member that
+// every object inherits.
+const WRAP_TOKENS: ReadonlyMap<string, Wrap> = new Map([
+	['wrap-left', 'left'],
+	['wrap-right', 'right'],
+	['wrap-block', 'block'],
+]);
+const GAP_TOKENS: ReadonlyMap<string, Gap> = new Map([
+	['gap-0', 0],
+	['gap-8', 8],
+	['gap-16', 16],
+	['gap-24', 24],
+]);
 
 const SIZE = /^\s*\d+(\s*x\s*\d+)?\s*$/;
 
@@ -49,7 +56,7 @@ export function isSizeSegment(s: string): boolean {
 
 /** True when `s` is exactly a layout token: no spaces around it, lower case, as styles.css matches it. */
 export function isLayoutToken(s: string): boolean {
-	return s in WRAP_TOKENS || s in GAP_TOKENS;
+	return WRAP_TOKENS.has(s) || GAP_TOKENS.has(s);
 }
 
 /** The layout of exact tokens among `segments` (a link's visible segments, or the parts of an alt text). */
@@ -57,8 +64,10 @@ export function layoutFromSegments(segments: readonly string[]): Layout {
 	let wrap: Wrap = 'none';
 	let gap: Gap = DEFAULT_GAP;
 	for (const s of segments) {
-		if (s in WRAP_TOKENS) wrap = WRAP_TOKENS[s]!;
-		else if (s in GAP_TOKENS) gap = GAP_TOKENS[s]!;
+		const w = WRAP_TOKENS.get(s);
+		const g = GAP_TOKENS.get(s);
+		if (w !== undefined) wrap = w;
+		else if (g !== undefined) gap = g;
 	}
 	return { wrap, gap };
 }
@@ -270,6 +279,15 @@ const IMAGE_EXT = /\.(avif|bmp|gif|jpe?g|png|svg|webp|heic|tiff?)$/i;
 export function looksLikeImage(target: string): boolean {
 	const clean = target.split('#')[0]!.split('?')[0]!.trim();
 	return IMAGE_EXT.test(clean) || /^data:image\//i.test(target) || /^https?:\/\//i.test(target);
+}
+
+/**
+ * True when the target is a URL with a scheme (https:, data: and the like) rather than a file in the
+ * vault. Obsidian draws such an image with its alt text on the img, not on the embed around it.
+ * A drive letter ("C:") is not a scheme.
+ */
+export function isExternalTarget(target: string): boolean {
+	return /^[a-z][a-z0-9+.-]+:/i.test(target.trim());
 }
 
 /** End (exclusive) of the code span whose backtick run starts at `i`. */

@@ -37,6 +37,12 @@ test('flags contexts that are display only in v1', () => {
 		['- ![[x.png]]', 'in a list'],
 		['# ![[x.png]]', 'in a heading'],
 		['```\n![[x.png]]\n```', 'not body text'],
+		// Lines that continue a list item, quote or footnote without its marker, and footnotes.
+		['- item\n![[x.png|wrap-left]]', 'in a list'],
+		['> quote\n![[x.png|wrap-left]]', 'in a quote or callout'],
+		['[^1]: ![[x.png|wrap-left]] note', 'in a footnote'],
+		['[^1]: note\nmore ![[x.png|wrap-left]]', 'in a footnote'],
+		['- item\n\n  ![[x.png|wrap-left]]', 'in a list'],
 	];
 	for (const [text, reason] of cases) {
 		const d = doc(text);
@@ -45,6 +51,23 @@ test('flags contexts that are display only in v1', () => {
 		assert.ok(found, text);
 		assert.equal(found.unsupported, reason, text);
 	}
+});
+
+test('body text images the toolbar and dragging act on, wherever a paragraph puts them', () => {
+	for (const text of [
+		'Intro.\n\n ![[x.png|wrap-left]]\nText.', // one to three spaces change nothing
+		'Intro.\n\n   ![[x.png|wrap-left]]\nText.',
+		'- item\n\n ![[x.png|wrap-left]]\nText.', // too little indent for the item: the list has ended
+		'Paragraph.\n    ![[x.png|wrap-left]]', // indented code cannot interrupt a paragraph
+		'Text right above.\n[^1]: ![[x.png|wrap-left]] note', // drawn as text under a paragraph
+		'![[square.png|constructor|200]]',
+	]) {
+		const d = doc(text);
+		const found = locateAt(d, d.toString().indexOf('!['));
+		assert.ok(found, text);
+		assert.equal(found.unsupported, null, text);
+	}
+	assert.deepEqual(locateAt(doc('![[square.png|constructor|200]]'), 0)!.link.layout, { wrap: 'none', gap: 16 });
 });
 
 test('a link inside inline code, inline math or a one-line comment is not found', () => {
