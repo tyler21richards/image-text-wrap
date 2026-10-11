@@ -20,7 +20,9 @@
 //   top safe area: --safe-area-inset-top on body; the emulation keeps the portrait value (59 px) in landscape
 //   sidebars: .workspace-drawer, z-index 30, over a backdrop at var(--layer-cover). On phones opening one
 //     slides the whole note aside (a transform, which resizes nothing and fires no workspace event); on
-//     tablets it floats over the note, which stays put
+//     tablets it floats over the note, which stays put. A tablet's sidebar can also be pinned (.is-pinned):
+//     then it sits beside the note (position: relative, z-index 5, no backdrop) and the note's pane is
+//     narrower, so the sheet keeps within that pane
 //   a tap on a Live Preview image selects it (.is-selected) as a click does on desktop, and focuses the
 //     embed itself (tabindex -1), not the text, so no keyboard opens; there is no resize corner, only
 //     .embed-actions > .edit-block-button
@@ -31,6 +33,9 @@
 //     cancels it, as if a menu had opened. On Android the browser's own (trusted) contextmenu comes instead
 //   a double tap: both taps arrive as clicks, with no delay (the app turns double-tap zoom off). A second tap
 //     on a selected picture opens Obsidian's image viewer
+//   a tap's click: pointerdown and pointerup go to what the finger pressed, but the click (and its mousedown)
+//     goes to what is under the finger when it lifts (Blink hit-tests the tap again at its end; Android's
+//     WebView is Blink too)
 import { setIcon } from 'obsidian';
 import { isElement } from '../dom';
 import type { Gap, Wrap } from '../grammar';
@@ -43,6 +48,7 @@ import {
 	layoutAfterWrapClick,
 	layoutForGap,
 } from '../ui/layout-choices';
+import { PassThrough } from '../ui/pass-through';
 import type { SheetHeader, SheetScreen } from '../ui/place-toolbar';
 import { ACTIVE, DISABLED, MenuWatch, type LayoutPanel, type ToolbarHost, type ToolbarSubject } from './toolbar-dom';
 
@@ -58,17 +64,38 @@ const PHONE = 'is-phone';
 const AUTO_FULL_SCREEN = 'auto-full-screen';
 
 const HIDDEN = 'itw-sheet-hidden';
-/** Just shown: taps go through the sheet for a moment (styles.css). */
+/** Just shown: taps go through the sheet for a moment (styles.css, PassThrough). */
 const ARMING = 'itw-sheet-arming';
+/** One row instead of two (styles.css): a short window, or too little room for the full sheet. */
+const COMPACT = 'itw-sheet-compact';
 const HINT_ID = 'itw-sheet-spacing-hint';
 
 /**
  * How long after a tap the second tap of a double tap may still come, in milliseconds (Android counts 300 ms
  * between the taps; a little more covers the frame the sheet takes to appear). Until then a sheet that has
- * just appeared lets taps through, and the note does not scroll the picture away (toolbar.ts), so the second
- * tap reaches the picture it was meant for.
+ * just appeared lets taps through (and so does it for any press that began meanwhile, until that press has
+ * ended: PassThrough), and the note does not scroll the picture away (toolbar.ts), so the second tap reaches
+ * the picture it was meant for.
  */
 export const DOUBLE_TAP_WAIT = 350;
+
+/**
+ * How long the click of a press that began while the sheet let taps through may take to come after the lift,
+ * in milliseconds. It comes a moment later, as a task of its own (5 ms measured); after a long press there
+ * may be none.
+ */
+const CLICK_WAIT = 300;
+
+/** Where the sheet goes (toolbar.ts). */
+export interface SheetPlace {
+	/** Its bottom edge, in px above the bottom of the window. */
+	bottom: number;
+	/** The note's pane, in px from the left and the right edge of the window: the sheet stays across it. */
+	left: number;
+	right: number;
+	/** One row instead of two. */
+	compact: boolean;
+}
 
 export class PictureSheet implements LayoutPanel {
 	readonly el: HTMLElement;
@@ -79,8 +106,12 @@ export class PictureSheet implements LayoutPanel {
 	private readonly spacing: HTMLElement;
 	private readonly hint: HTMLElement;
 	private readonly menus: MenuWatch;
-	/** The timer that ends the moment after the sheet appears in which taps go through it; 0 when none runs. */
+	/** Whether taps go through the sheet now (ARMING), and until when. */
+	private readonly taps = new PassThrough();
+	/** The timer that ends the wait for a double tap's second tap after the sheet appears; 0 when none runs. */
 	private arming = 0;
+	/** The timer that ends the wait for the click of a press PassThrough waits for; 0 when none runs. */
+	private clickWait = 0;
 
 	constructor(readonly doc: Document) {
 		this.el = doc.body.createDiv({
@@ -128,6 +159,12 @@ export class PictureSheet implements LayoutPanel {
 			e.stopPropagation();
 		});
 		this.menus = new MenuWatch(doc);
+		// Every press in the window, to know which began while the sheet let taps through (PassThrough).
+		const win = doc.win;
+		win.addEventListener('pointerdown', this.onPress, true);
+		win.addEventListener('pointerup', this.onLift, true);
+		win.addEventListener('pointercancel', this.onCancel, true);
+		win.addEventListener('click', this.onClick, true);
 	}
 
 	keyAlreadyUsed(e: KeyboardEvent): boolean {
@@ -158,21 +195,41 @@ export class PictureSheet implements LayoutPanel {
 	}
 
 	/**
-	 * Shows the sheet with its bottom edge `bottom` px above the bottom of the window. A sheet that appears lets
-	 * taps through it for DOUBLE_TAP_WAIT ms: it appears a frame after the tap that selected a picture, often
-	 * where that picture is, and the second tap of a double tap must not press the button that is now under
-	 * the finger (pressing the current layout turns wrapping off). It reaches the picture instead, and Obsidian
-	 * opens its viewer, as for a picture higher up.
+	 * The sheet's height in its full or its compact form (measure phase). To measure the form it is not in, it
+	 * switches to that one and back, before anything is drawn.
 	 */
-	showAt(bottom: number): void {
-		this.el.setCssProps({ '--itw-sheet-bottom': `${bottom}px` });
+	heightAs(compact: boolean): number {
+		const now = this.el.hasClass(COMPACT);
+		if (now === compact) return this.el.offsetHeight;
+		this.el.toggleClass(COMPACT, compact);
+		const height = this.el.offsetHeight;
+		this.el.toggleClass(COMPACT, now);
+		return height;
+	}
+
+	/**
+	 * Shows the sheet in `place`. A sheet that appears lets taps through it for DOUBLE_TAP_WAIT ms: it appears a
+	 * frame after the tap that selected a picture, often where that picture is, and the second tap of a double
+	 * tap must not press the button that is now under the finger (pressing the current layout turns wrapping
+	 * off). It reaches the picture instead, and Obsidian opens its viewer, as for a picture higher up. A press
+	 * that began in that time is let through to its end, click and all, however long it lasts (PassThrough).
+	 */
+	showAt(place: SheetPlace): void {
+		this.el.setCssProps({
+			'--itw-sheet-bottom': `${place.bottom}px`,
+			'--itw-sheet-left': `${place.left}px`,
+			'--itw-sheet-right': `${place.right}px`,
+		});
+		this.el.toggleClass(COMPACT, place.compact);
 		if (!this.el.hasClass(HIDDEN)) return;
 		this.el.removeClass(HIDDEN);
 		this.stopArming();
+		this.taps.start();
 		this.el.addClass(ARMING);
 		this.arming = this.doc.win.setTimeout(() => {
 			this.arming = 0;
-			this.el.removeClass(ARMING);
+			this.taps.waitOver();
+			this.settle();
 		}, DOUBLE_TAP_WAIT);
 	}
 
@@ -184,15 +241,58 @@ export class PictureSheet implements LayoutPanel {
 
 	destroy(): void {
 		this.stopArming();
+		const win = this.doc.win;
+		win.removeEventListener('pointerdown', this.onPress, true);
+		win.removeEventListener('pointerup', this.onLift, true);
+		win.removeEventListener('pointercancel', this.onCancel, true);
+		win.removeEventListener('click', this.onClick, true);
 		this.menus.disconnect();
 		this.el.remove();
 		this.host = null;
 	}
 
 	private stopArming(): void {
-		if (this.arming) this.doc.win.clearTimeout(this.arming);
+		const win = this.doc.win;
+		if (this.arming) win.clearTimeout(this.arming);
+		if (this.clickWait) win.clearTimeout(this.clickWait);
 		this.arming = 0;
+		this.clickWait = 0;
+		this.taps.stop();
 		this.el.removeClass(ARMING);
+	}
+
+	/** Takes taps again, once nothing that began while taps went through is left (PassThrough). */
+	private settle(): void {
+		if (this.taps.settle()) this.el.removeClass(ARMING);
+	}
+
+	private readonly onPress = (e: PointerEvent): void => {
+		this.taps.press(e.pointerId);
+	};
+
+	private readonly onLift = (e: PointerEvent): void => {
+		// A press let through: its click is still to come, aimed at what is under the finger now.
+		if (this.taps.lift(e.pointerId)) this.waitForClick(CLICK_WAIT);
+	};
+
+	private readonly onCancel = (e: PointerEvent): void => {
+		this.taps.cancel(e.pointerId);
+		this.settle();
+	};
+
+	/** The click that was waited for: it goes through the sheet, which takes taps again once it has been handled. */
+	private readonly onClick = (): void => {
+		if (this.clickWait) this.waitForClick(0);
+	};
+
+	private waitForClick(ms: number): void {
+		const win = this.doc.win;
+		if (this.clickWait) win.clearTimeout(this.clickWait);
+		this.clickWait = win.setTimeout(() => {
+			this.clickWait = 0;
+			this.taps.clicked();
+			this.settle();
+		}, ms);
 	}
 
 	private chooseWrap(wrap: Wrap): void {

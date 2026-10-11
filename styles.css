@@ -443,15 +443,16 @@ p > img:is([alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt
 /*
  * Phones and tablets: the toolbar is a sheet docked at the bottom of the screen instead, one per window.
  * The plugin sets --itw-sheet-bottom to clear the keyboard and Obsidian's navigation bar and editing
- * toolbar; it never goes below the safe area. Full width on a phone (less a small margin), a centred card
- * on a tablet. Every button is at least 44 px tall and carries a visible label: touch has no hover, so no
- * tooltip can explain an icon. Just below Obsidian's sidebar backdrop (--layer-cover), so an open sidebar
- * covers it, and above the note and its header.
+ * toolbar; it never goes below the safe area. Across the note's pane (--itw-sheet-left and -right, from the
+ * window's edges: a sidebar pinned on a tablet sits beside the note and is drawn above the sheet). Full
+ * width on a phone (less a small margin), a centred card on a tablet. Every button is at least 44 px tall
+ * and carries a visible label: touch has no hover, so no tooltip can explain an icon. Just below Obsidian's
+ * sidebar backdrop (--layer-cover), so an open sidebar covers it, and above the note and its header.
  */
 .itw-sheet {
 	position: fixed;
-	left: calc(var(--safe-area-inset-left, 0px) + var(--size-4-2));
-	right: calc(var(--safe-area-inset-right, 0px) + var(--size-4-2));
+	left: calc(max(var(--itw-sheet-left, 0px), var(--safe-area-inset-left, 0px)) + var(--size-4-2));
+	right: calc(max(var(--itw-sheet-right, 0px), var(--safe-area-inset-right, 0px)) + var(--size-4-2));
 	bottom: max(var(--itw-sheet-bottom, 0px), var(--safe-area-inset-bottom, 0px));
 	z-index: calc(var(--layer-cover) - 1);
 	box-sizing: border-box;
@@ -597,59 +598,69 @@ body.itw-dragging .itw-sheet {
 }
 
 /*
- * A short window (a phone in landscape): the sheet is one row, the layouts on the left and the spacing on the
- * right, about 70 px tall instead of 170, so the picture it is for fits above it. Each layout keeps its icon
- * and label, the icon over a label in one line; "Spacing" stands beside its segments, and while the picture
- * is in line the explanation takes the place of the segments, which do nothing then.
+ * The compact sheet (.itw-sheet-compact, chosen by the plugin): one row, the layouts on the left and the
+ * spacing on the right, about 70 px tall instead of 170. A short window (a phone in landscape) always has it,
+ * so the picture it is for fits above it, and a taller one has it while the full sheet would leave too little
+ * of the note in view (a tablet with the keyboard up). Each layout keeps its icon and label, the icon over a
+ * label in one line; "Spacing" stands beside its segments, and while the picture is in line the explanation
+ * takes the place of the segments, which do nothing then.
  */
-@media (max-height: 500px) {
-	.itw-sheet {
-		flex-direction: row;
-		align-items: stretch;
-		max-width: none;
-		padding: var(--size-4-2);
-	}
+.itw-sheet.itw-sheet-compact {
+	flex-direction: row;
+	align-items: stretch;
+	max-width: none;
+	padding: var(--size-4-2);
+}
 
-	.itw-sheet-choices {
-		flex: 4 1 0;
-		gap: var(--size-4-1);
-	}
+.itw-sheet-compact .itw-sheet-choices {
+	flex: 4 1 0;
+	gap: var(--size-4-1);
+}
 
-	.itw-sheet .itw-sheet-choice {
-		gap: var(--size-2-1);
-		min-height: max(var(--touch-size-m), 44px);
-		padding: var(--size-2-2) var(--size-4-1);
-	}
+.itw-sheet.itw-sheet-compact .itw-sheet-choice {
+	gap: var(--size-2-1);
+	min-height: max(var(--touch-size-m), 44px);
+	padding: var(--size-2-2) var(--size-4-1);
+}
 
-	.itw-sheet-spacing-section {
-		flex: 3 1 0;
-		flex-direction: row;
-		align-items: center;
-		gap: var(--size-4-2);
-		min-width: 0;
-	}
+/* Never narrower than "Spacing" and its segments need: the layouts' labels wrap first. */
+.itw-sheet-compact .itw-sheet-spacing-section {
+	flex: 3 1 0;
+	flex-direction: row;
+	align-items: center;
+	gap: var(--size-4-2);
+	min-width: min-content;
+}
 
-	.itw-sheet-spacing-header {
-		flex-direction: column;
-		align-items: flex-start;
-		gap: 0;
-		padding: 0;
-	}
+.itw-sheet-compact .itw-sheet-spacing-header {
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 0;
+	padding: 0;
+}
 
-	.itw-sheet-spacing-hint {
-		text-align: start;
-	}
+.itw-sheet-compact .itw-sheet-spacing-hint {
+	text-align: start;
+}
 
-	.itw-sheet-spacing-hint.itw-sheet-hint-hidden,
-	.itw-sheet-spacing.is-disabled {
-		display: none;
-	}
+.itw-sheet-compact .itw-sheet-spacing-hint.itw-sheet-hint-hidden,
+.itw-sheet-compact .itw-sheet-spacing.is-disabled {
+	display: none;
+}
 
-	.itw-sheet-spacing {
-		flex: 1 1 0;
-		align-self: stretch;
-		min-width: 0;
-	}
+/*
+ * Every segment at least as wide as its label (in bold while pressed), with a narrower padding: on a narrow
+ * phone in landscape (667 px) "Medium" does not fit a quarter of the row. Equal while they all fit.
+ */
+.itw-sheet-compact .itw-sheet-spacing {
+	flex: 1 1 0;
+	align-self: stretch;
+	min-width: 0;
+	grid-template-columns: repeat(4, minmax(max-content, 1fr));
+}
+
+.itw-sheet.itw-sheet-compact .itw-sheet-segment {
+	padding: 0 var(--size-2-1);
 }
 
 /* ---------- Drag ---------- */
