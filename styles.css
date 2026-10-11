@@ -232,17 +232,19 @@ p > img:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="
  * a zero-height block widget holding the copy, floated, sized and spaced like the real picture, and
  * pulled up by as much as the real one starts above that line. The part above the line is cut off.
  *
- * Obsidian gives every block widget `contain: paint !important`, which would trap the float inside this
- * zero-height box. Only a more specific rule that is also !important can undo it (brief 7 item 1).
+ * Obsidian gives a block widget whose root is contenteditable="false" an important `contain: paint`,
+ * which would trap the float inside this zero-height box. So the widget's root has no contenteditable
+ * attribute (StandInWidget.editable in stand-ins.ts), and the element holding the copies inside it is
+ * contenteditable="false" instead: nothing in the widget is editable. Neither makes a block formatting
+ * context, so the floats reach the lines after the widget.
  */
-.markdown-source-view.mod-cm6 .cm-content > .itw-stand-in[contenteditable="false"] {
-	contain: none !important;
-}
-
 .itw-stand-in {
 	height: 0;
 	margin: 0;
 	padding: 0;
+	user-select: none;
+}
+.itw-stand-in-copies {
 	user-select: none;
 }
 
@@ -258,7 +260,10 @@ p > img:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="
 	float: right;
 }
 
-/* Positioned and raised like the real picture, so editor lines do not paint over it. */
+/*
+ * Positioned and raised like the real picture, so editor lines do not paint over it. Its box is the whole
+ * picture's, which the text wraps around; only the part inside .itw-stand-in-clip shows or takes a click.
+ */
 .itw-stand-in-float {
 	position: relative;
 	z-index: 1;
@@ -267,7 +272,7 @@ p > img:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="
 	height: var(--itw-stand-in-height, 0px);
 	margin-top: var(--itw-stand-in-margin-top, 0px);
 	margin-bottom: var(--itw-stand-in-margin-bottom, 0px);
-	clip-path: inset(var(--itw-stand-in-clip, 0px) 0 0 0);
+	pointer-events: none;
 }
 .itw-stand-in-float.mod-left {
 	float: left;
@@ -281,10 +286,26 @@ p > img:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="
 	margin-right: var(--itw-stand-in-inset, 0px);
 	margin-left: var(--itw-stand-in-gap, 0px);
 }
-.itw-stand-in-float > img {
-	display: block;
+/*
+ * The part of the picture from the line down: from --itw-stand-in-clip (the part above the line) below the
+ * float's top to its bottom. The picture is drawn over the float's whole box, as without the cut, from the
+ * bottom of both, so it lies exactly where the float is.
+ */
+.itw-stand-in-clip {
+	position: absolute;
+	right: 0;
+	bottom: 0;
+	left: 0;
+	height: calc(var(--itw-stand-in-height, 0px) - var(--itw-stand-in-clip, 0px));
+	overflow: hidden;
+	pointer-events: auto;
+}
+.itw-stand-in-clip > img {
+	position: absolute;
+	bottom: 0;
+	left: 0;
 	width: 100%;
-	height: 100%;
+	height: var(--itw-stand-in-height, 0px);
 	max-width: none;
 	border-radius: var(--image-radius);
 	pointer-events: none;
