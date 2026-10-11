@@ -11,8 +11,11 @@
 //   - coordsAtPos(head) must be within 3px of the click (x) and contain its y (3px slack).
 // Then ArrowDown / ArrowUp / ArrowRight from a word beside the picture, and typing two letters there
 // (undone with one undo). Also the picture's top against the first wrapped line (glyph and line box).
-// Finally the same clicks beside a stand-in: the tall picture's line scrolled out of the drawn range.
-// The note is restored at the end.
+// Finally the same clicks beside a stand-in: the tall picture's line scrolled out of the drawn range,
+// with the stand-in widget checked too: no contenteditable on its root (so Obsidian's `contain: paint`
+// for block widgets does not apply: computed contain none), contenteditable="false" on the element
+// holding the copies, and the float reaching past the zero-height widget. After every click the DOM's
+// caret must not be inside a stand-in. The note is restored at the end.
 import { writeFileSync } from 'node:fs';
 
 function installHelpers() {
@@ -129,16 +132,37 @@ function installHelpers() {
 		return { cm, dom };
 	};
 
-	/** Where the cursor is now and where CodeMirror draws it. */
+	/** Where the cursor is now and where CodeMirror draws it, and whether the DOM's caret is inside a stand-in. */
 	const head = () => {
 		const v = view();
 		const h = v.state.selection.main.head;
 		const c = v.coordsAtPos(h);
 		const line = v.state.doc.lineAt(h);
-		return { head: h, line: line.number, col: h - line.from, coords: c && { left: c.left, top: c.top, bottom: c.bottom } };
+		const sel = document.getSelection();
+		const inStandIn = [sel.anchorNode, sel.focusNode].some((n) => !!n && !!(n.nodeType === 1 ? n : n.parentElement)?.closest('.itw-stand-in'));
+		return { head: h, line: line.number, col: h - line.from, coords: c && { left: c.left, top: c.top, bottom: c.bottom }, inStandIn };
 	};
 
-	window.__lc = { view, frames, sleep, words, scrollToDocY, images, pictureRect, targets, expectAt, head };
+	/**
+	 * The stand-in widget of the picture at `from`: its root has no contenteditable (Obsidian gives a block
+	 * widget's root with contenteditable="false" `contain: paint`, which would keep the float inside it),
+	 * the element holding the copies is contenteditable="false", and the float reaches past the widget.
+	 */
+	const standInWidget = (from) => {
+		const float = view().contentDOM.querySelector(`.itw-stand-in-float[data-from="${from}"]`);
+		const root = float?.closest('.itw-stand-in');
+		if (!root) return null;
+		const copies = float.parentElement === root ? null : float.parentElement;
+		const out = {
+			rootContentEditable: root.getAttribute('contenteditable'),
+			rootContain: getComputedStyle(root).contain,
+			copiesContentEditable: copies?.getAttribute('contenteditable') ?? null,
+			floatPastWidget: float.getBoundingClientRect().bottom > root.getBoundingClientRect().bottom + 1,
+		};
+		return { ...out, pass: out.rootContentEditable === null && out.rootContain === 'none' && out.copiesContentEditable === 'false' && out.floatPastWidget };
+	};
+
+	window.__lc = { view, frames, sleep, words, scrollToDocY, images, pictureRect, targets, expectAt, head, standInWidget };
 }
 
 export default async ({ page, openNote, setWindowSize, watchErrors, getNote, setNote, args }) => {
@@ -180,7 +204,8 @@ export default async ({ page, openNote, setWindowSize, watchErrors, getNote, set
 				line: got.line,
 				caretDx: dx,
 				caretContainsY: inY,
-				pass: got.head === expected.cm && (expected.dom === null || got.head === expected.dom) && dx !== null && dx <= 3 && inY,
+				caretInStandIn: got.inStandIn,
+				pass: got.head === expected.cm && (expected.dom === null || got.head === expected.dom) && dx !== null && dx <= 3 && inY && !got.inStandIn,
 			});
 		}
 		return out;
@@ -292,6 +317,7 @@ export default async ({ page, openNote, setWindowSize, watchErrors, getNote, set
 	}, tall.from);
 	if (found) {
 		const targets = await page.evaluate(({ r, side }) => __lc.targets(r, side), { r: found.rect, side: tall.side });
+		const widget = await page.evaluate((from) => __lc.standInWidget(from), tall.from);
 		const sel0 = await page.evaluate(() => __lc.head());
 		// Clicking the stand-in itself does nothing.
 		const onCopy = { x: Math.round(found.rect.left + found.rect.width / 2), y: Math.round(Math.max(found.rect.top, 120) + 60) };
@@ -323,7 +349,14 @@ export default async ({ page, openNote, setWindowSize, watchErrors, getNote, set
 				pass: typed.slice(at, at + 2) === 'Zq' && undone === before && !!copyAfter,
 			};
 		}
-		results.standIn = { image: tall.n, scrollTop: found.scrollTop, clickOnCopy: { ...onCopy, selectionUnchanged: sel0.head === sel1.head, stillStandIn }, clicks, typing };
+		results.standIn = {
+			image: tall.n,
+			scrollTop: found.scrollTop,
+			widget,
+			clickOnCopy: { ...onCopy, selectionUnchanged: sel0.head === sel1.head, caretInStandIn: sel1.inStandIn, stillStandIn },
+			clicks,
+			typing,
+		};
 	} else {
 		results.standIn = { error: 'no stand-in found while scrolling up' };
 	}
@@ -348,7 +381,15 @@ export default async ({ page, openNote, setWindowSize, watchErrors, getNote, set
 	}
 	if (results.standIn?.clicks) {
 		const s = results.standIn;
-		lines.push(`beside the stand-in of L${s.image}: click on the copy leaves the selection ${s.clickOnCopy.selectionUnchanged ? 'unchanged' : 'CHANGED'} (still a stand-in: ${s.clickOnCopy.stillStandIn})`);
+		const w = s.widget;
+		lines.push(
+			w
+				? `stand-in widget of L${s.image}: root contenteditable ${w.rootContentEditable ?? 'none'}, contain ${w.rootContain}; copies contenteditable ${w.copiesContentEditable}; float reaches past the widget ${w.floatPastWidget} ${w.pass ? 'PASS' : 'FAIL'}`
+				: `stand-in widget of L${s.image}: not found FAIL`,
+		);
+		lines.push(
+			`beside the stand-in of L${s.image}: click on the copy leaves the selection ${s.clickOnCopy.selectionUnchanged ? 'unchanged' : 'CHANGED'} (still a stand-in: ${s.clickOnCopy.stillStandIn}; caret inside it: ${s.clickOnCopy.caretInStandIn})`,
+		);
 		for (const c of s.clicks) lines.push(`  click ${c.case} "${c.word}": head ${c.head} cm ${c.expectedCm} dom ${c.expectedDom} caret dx ${c.caretDx} ${c.pass ? 'PASS' : 'FAIL'}`);
 		if (s.typing) lines.push(`  typing: inserted "${s.typing.inserted}", copy stayed ${s.typing.copyStayed}, one undo restores ${s.typing.undoRestored} ${s.typing.pass ? 'PASS' : 'FAIL'}`);
 	} else lines.push(`stand-in: ${results.standIn?.error}`);

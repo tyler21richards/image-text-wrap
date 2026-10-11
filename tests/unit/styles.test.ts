@@ -25,8 +25,8 @@ test('styles.css has balanced braces and no rule nested inside another', () => {
 	assert.equal(open.length, 0, `unclosed "{" after ${open[open.length - 1]?.slice(0, 80)}`);
 });
 
-test('styles.css avoids :has() and keeps !important to the one documented case', () => {
+test('styles.css avoids :has() and !important', () => {
 	assert.ok(!css.includes(':has('));
 	const important = css.match(/!important/g) ?? [];
-	assert.equal(important.length, 1);
+	assert.equal(important.length, 0);
 });

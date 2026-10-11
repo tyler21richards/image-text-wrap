@@ -206,6 +206,21 @@ class StandInWidget extends WidgetType {
 		return 0;
 	}
 
+	/**
+	 * Read by CodeMirror, which gives the root of a widget that is not editable contenteditable="false"
+	 * (WidgetTile.of; the getter is internal, so not in its types). Obsidian gives such a root of a block
+	 * widget `contain: paint !important`, which would keep the floats inside this zero-height block. So
+	 * the root stays without the attribute, and contenteditable="false" goes on the element holding the
+	 * copies (fill): nothing in the widget is editable. The root holds no text and is 0px high, so the
+	 * browser has no place for the caret in it either; CodeMirror's own gaps for the lines it does not
+	 * draw (cm-gap) are editable block widgets without text in the same way. Measured in Obsidian 1.14:
+	 * clicks on and around a copy, arrow keys, selection, typing and IME composition beside it never put
+	 * the caret inside, as before.
+	 */
+	get editable(): boolean {
+		return true;
+	}
+
 	ignoreEvent(): boolean {
 		return true;
 	}
@@ -230,12 +245,15 @@ class StandInWidget extends WidgetType {
 		const old = new Map<string, HTMLImageElement>();
 		for (const img of Array.from(root.querySelectorAll('img'))) old.set(img.getAttribute('src') ?? '', img);
 		root.empty();
+		// Not editable, so no caret or typing goes in (see editable). Neither it nor the root makes a block
+		// formatting context, so the floats still reach the lines after the widget.
+		const copies = root.createDiv({ cls: 'itw-stand-in-copies', attr: { contenteditable: 'false' } });
 		for (const item of items) {
 			if (item.sandbag > 0) {
-				const bag = root.createDiv({ cls: `itw-stand-in-sandbag mod-${item.side}` });
+				const bag = copies.createDiv({ cls: `itw-stand-in-sandbag mod-${item.side}` });
 				bag.setCssProps({ '--itw-stand-in-sandbag': px(item.sandbag) });
 			}
-			const float = root.createDiv({ cls: `itw-stand-in-float mod-${item.side}`, attr: { 'data-from': String(item.pos) } });
+			const float = copies.createDiv({ cls: `itw-stand-in-float mod-${item.side}`, attr: { 'data-from': String(item.pos) } });
 			const b = item.box;
 			float.setCssProps({
 				'--itw-stand-in-width': px(b.width),
@@ -246,12 +264,14 @@ class StandInWidget extends WidgetType {
 				'--itw-stand-in-inset': px(b.inset),
 				'--itw-stand-in-clip': px(item.shift),
 			});
+			// The float keeps the picture's whole box; this shows only its part from the line down.
+			const clip = float.createDiv({ cls: 'itw-stand-in-clip' });
 			const img = old.get(item.src);
 			if (img) {
 				old.delete(item.src);
-				float.appendChild(img);
+				clip.appendChild(img);
 			} else {
-				float.createEl('img', { attr: { src: item.src, alt: '', draggable: 'false' } });
+				clip.createEl('img', { attr: { src: item.src, alt: '', draggable: 'false' } });
 			}
 		}
 	}
