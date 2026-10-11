@@ -2,6 +2,8 @@
 
 Word-style text wrapping for images in [Obsidian](https://obsidian.md).
 
+![A note in Obsidian with a picture wrapped on the left and its layout toolbar showing, and a second picture wrapped on the right.](docs/screenshot-light.png)
+
 - Click a picture and a small toolbar appears above it.
 - One click turns text wrapping on or off and picks the side.
 - Drag the picture to another place in the note, and the text flows around it wherever it lands.
