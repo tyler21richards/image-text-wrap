@@ -9,6 +9,8 @@
 // flips the setting, records buzzes, adds a button to press keys on, and stands in for the on-screen keyboard
 // (window.visualViewport) and for the app going to the background (a blur), which the emulation does not have.
 // Prints one line per test: size, theme, name, pass/fail, and the evidence.
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { mkdirSync } from 'node:fs';
 import * as d from './drag-lib.mjs';
 import { setMobile, touch } from './mobile.mjs';
@@ -30,7 +32,8 @@ const THEMES = [
 ];
 
 export default async ({ page, openNote, watchErrors, args }) => {
-	const out = args[0] ?? '.';
+	// Screenshots go to the given folder, or else next to the harness's instances, never into the repository.
+	const out = args[0] ?? join(process.env.ITW_STATE_DIR ?? tmpdir(), 'mobile-drag-shots');
 	const picks = args.slice(1);
 	const pick = (all) => (all.some((x) => picks.includes(x)) ? all.filter((x) => picks.includes(x)) : all);
 	const sizes = pick(['phone', 'tablet']);
