@@ -98,3 +98,47 @@ export function placeToolbar(p: PlaceInput): Placement | null {
 	// Nothing is free (a tiny window): stay at the top of the visible area rather than vanish.
 	return { left: insideLeft, top: Math.round(Math.min(start, bottomLimit - p.height)), where: 'inside' };
 }
+
+// ---------- The sheet on phones and tablets ----------
+
+/** What sits at the bottom of a phone or tablet screen, measured in window coordinates. */
+export interface SheetScreen {
+	/** The window's height (innerHeight), which a fixed element's `bottom` counts from. */
+	height: number;
+	/**
+	 * The visual viewport's top and height, when the page is not zoomed. A keyboard that shrinks the visual
+	 * viewport rather than the window ends it.
+	 */
+	visual: { top: number; height: number } | null;
+	/** How much of the bottom of the window the keyboard covers, as Obsidian reports it (--keyboard-height). */
+	keyboard: number;
+	/** The bottom safe-area inset (the home indicator). */
+	safeBottom: number;
+	/** The tops of the bars docked at the bottom: Obsidian's navigation bar and its editing toolbar. */
+	bars: readonly number[];
+	/** Space kept between the sheet and whatever is below it. */
+	gap: number;
+}
+
+/**
+ * How far above the bottom of the window the sheet's bottom edge goes: clear of the keyboard, the bars and
+ * the safe area, whichever reaches highest.
+ */
+export function sheetBottom(s: SheetScreen): number {
+	let floor = s.height - s.keyboard;
+	if (s.visual) floor = Math.min(floor, s.visual.top + s.visual.height);
+	for (const top of s.bars) floor = Math.min(floor, top);
+	return Math.round(Math.max(s.height - floor, s.safeBottom) + s.gap);
+}
+
+/**
+ * How far to scroll the note (positive: the text moves up) so the sheet does not cover the picture: until
+ * the picture's bottom is `margin` px above the sheet, but never so far that its top goes above the visible
+ * area (a tall picture shows its top). 0 when the sheet does not cover it.
+ */
+export function revealScroll(picture: Box, visibleTop: number, sheetTop: number, margin: number): number {
+	if (picture.bottom <= sheetTop) return 0;
+	const clear = picture.bottom - (sheetTop - margin);
+	const most = picture.top - (visibleTop + margin);
+	return Math.max(0, Math.round(Math.min(clear, most)));
+}

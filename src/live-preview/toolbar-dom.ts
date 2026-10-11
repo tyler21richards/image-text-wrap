@@ -32,13 +32,53 @@ export interface ToolbarHost {
 	dismiss(): void;
 }
 
+/** What the editor needs of the picture toolbar (desktop) and of the sheet (phones and tablets, toolbar-sheet.ts). */
+export interface LayoutPanel {
+	readonly el: HTMLElement;
+	host: ToolbarHost | null;
+	/** Pressed state and what is offered, from the link itself. */
+	render(subject: ToolbarSubject): void;
+	hide(): void;
+	destroy(): void;
+	keyAlreadyUsed(e: KeyboardEvent): boolean;
+}
+
 const HIDDEN = 'itw-toolbar-hidden';
 /** Obsidian 1.14.4: a menu it shows (not a native one) is body > div.menu while it is open. */
 const MENU = 'menu';
-const ACTIVE = 'is-active';
-const DISABLED = 'is-disabled';
+export const ACTIVE = 'is-active';
+export const DISABLED = 'is-disabled';
 
-export class PictureToolbar {
+/**
+ * Notes when this window's Obsidian menus close, to tell whether a key press closed one (see
+ * PictureToolbar.keyAlreadyUsed). Obsidian puts every menu it shows (the Spacing dropdown, an image's
+ * right-click menu) straight in the window's body and takes it out when it closes.
+ */
+export class MenuWatch {
+	private readonly observer: MutationObserver;
+	/** When a menu of this window last closed, on the window's performance.now() clock. */
+	private closedAt = -Infinity;
+
+	constructor(doc: Document) {
+		// The window's own observer, for pop-out windows.
+		const win = doc.win as Window & { MutationObserver?: typeof MutationObserver };
+		this.observer = new (win.MutationObserver ?? MutationObserver)((records) => {
+			const closed = records.some((r) => Array.from(r.removedNodes).some((n) => n.instanceOf(HTMLElement) && n.hasClass(MENU)));
+			if (closed) this.closedAt = win.performance.now();
+		});
+		this.observer.observe(doc.body, { childList: true });
+	}
+
+	keyAlreadyUsed(e: KeyboardEvent): boolean {
+		return e.defaultPrevented || this.closedAt >= e.timeStamp;
+	}
+
+	disconnect(): void {
+		this.observer.disconnect();
+	}
+}
+
+export class PictureToolbar implements LayoutPanel {
 	readonly el: HTMLElement;
 	host: ToolbarHost | null = null;
 	private subject: ToolbarSubject | null = null;
@@ -51,9 +91,7 @@ export class PictureToolbar {
 	/** The button (or the toolbar itself) the pointer is over, whose tooltip Obsidian may be showing. */
 	private pointed: HTMLElement | null = null;
 	/** Watches this window's Obsidian menus come and go (see keyAlreadyUsed). */
-	private readonly menus: MutationObserver;
-	/** When a menu of this window last closed, on the window's performance.now() clock. */
-	private menuClosedAt = -Infinity;
+	private readonly menus: MenuWatch;
 
 	constructor(readonly doc: Document) {
 		this.el = doc.body.createDiv({
@@ -86,15 +124,7 @@ export class PictureToolbar {
 		this.el.addEventListener('pointerleave', () => {
 			this.pointed = null;
 		});
-
-		// Obsidian puts every menu it shows (the Spacing dropdown, an image's right-click menu) straight in
-		// the window's body and takes it out when it closes. The window's own observer, for pop-out windows.
-		const win = doc.win as Window & { MutationObserver?: typeof MutationObserver };
-		this.menus = new (win.MutationObserver ?? MutationObserver)((records) => {
-			const closed = records.some((r) => Array.from(r.removedNodes).some((n) => n.instanceOf(HTMLElement) && n.hasClass(MENU)));
-			if (closed) this.menuClosedAt = win.performance.now();
-		});
-		this.menus.observe(doc.body, { childList: true });
+		this.menus = new MenuWatch(doc);
 	}
 
 	/**
@@ -103,13 +133,13 @@ export class PictureToolbar {
 	 * the image's right-click menu leaves the toolbar shown, and the next one hides it.
 	 *
 	 * Obsidian closes an open menu on Esc before the key reaches the editor (its key handling listens on the
-	 * window, first), and lets the key go on without marking it. The removal is noted by the observer above,
+	 * window, first), and lets the key go on without marking it. The removal is noted by MenuWatch's observer,
 	 * whose callback runs as soon as Obsidian's listener returns, before the editor's listeners. An event's
 	 * timeStamp and performance.now() share the window's clock, so a menu closed after the key was pressed
 	 * was closed by it.
 	 */
 	keyAlreadyUsed(e: KeyboardEvent): boolean {
-		return e.defaultPrevented || this.menuClosedAt >= e.timeStamp;
+		return this.menus.keyAlreadyUsed(e);
 	}
 
 	private addButton(icon: string, label: string): HTMLButtonElement {

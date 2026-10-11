@@ -1,26 +1,31 @@
-// Picture toolbar shown above the image Obsidian has selected in Live Preview (brief 4.1).
+// Picture toolbar shown above the image Obsidian has selected in Live Preview (brief 4.1), and on phones
+// and tablets a sheet docked at the bottom of the screen instead (brief M5, toolbar-sheet.ts).
 //
 // Obsidian marks the selected image with .is-selected and keeps that selection through edits that only
 // rewrite the link, so the toolbar follows that class: a MutationObserver on the editor's content (class
 // changes) plus every editor update. All DOM reads happen in CodeMirror's measure phase.
 import type { Extension, Text } from '@codemirror/state';
 import { ViewPlugin, type EditorView, type PluginValue, type ViewUpdate } from '@codemirror/view';
-import { editorInfoField, type MarkdownFileInfo } from 'obsidian';
+import { Platform, editorInfoField, type MarkdownFileInfo } from 'obsidian';
 import { NATIVE_CONTROLS, pictureOf, selectedImage } from '../dom';
 import { locateEmbed, type LocatedLink } from '../edit/locate';
 import type { Gap, Layout } from '../grammar';
 import { registerIcons } from '../icons';
 import type ImageTextWrapPlugin from '../main';
-import { placeToolbar, type Box, type Placement } from '../ui/place-toolbar';
-import { PictureToolbar, type ToolbarHost, type ToolbarSubject } from './toolbar-dom';
+import { placeToolbar, revealScroll, sheetBottom, visiblePart, type Box, type Placement } from '../ui/place-toolbar';
+import { PictureToolbar, type LayoutPanel, type ToolbarHost, type ToolbarSubject } from './toolbar-dom';
+import { PictureSheet, ScreenWatch, headerBottom, measureScreen } from './toolbar-sheet';
 import { keepScrollExtension, releaseScrollPosition } from './keep-scroll';
 import { isLivePreview, writeLayout } from './toolbar-target';
 
 /** Space between the picture and the toolbar, and between the toolbar and the scroller's edges. */
 const GAP = 8;
 const MARGIN = 4;
+/** On phones and tablets: space between the sheet and the bars or keyboard below it, and kept around the picture it reveals. */
+const SHEET_GAP = 8;
 
 const toolbars = new Map<Document, PictureToolbar>();
+const sheets = new Map<Document, PictureSheet>();
 
 function toolbarFor(doc: Document): PictureToolbar {
 	let toolbar = toolbars.get(doc);
@@ -31,10 +36,21 @@ function toolbarFor(doc: Document): PictureToolbar {
 	return toolbar;
 }
 
-/** Removes every toolbar element from every window (plugin unload). */
+function sheetFor(doc: Document): PictureSheet {
+	let sheet = sheets.get(doc);
+	if (!sheet) {
+		sheet = new PictureSheet(doc);
+		sheets.set(doc, sheet);
+	}
+	return sheet;
+}
+
+/** Removes every toolbar and sheet element from every window (plugin unload). */
 export function destroyToolbars(): void {
 	for (const toolbar of toolbars.values()) toolbar.destroy();
 	toolbars.clear();
+	for (const sheet of sheets.values()) sheet.destroy();
+	sheets.clear();
 }
 
 const liveViews = new Set<ToolbarView>();
@@ -70,18 +86,39 @@ interface Measured {
 	placement: Placement | null;
 }
 
+/** Phones and tablets: where the sheet goes, and how far to scroll so it does not cover the picture. */
+interface SheetMeasured {
+	sheet: PictureSheet;
+	embed: HTMLElement;
+	subject: ToolbarSubject;
+	/** The sheet's bottom edge, in px above the bottom of the window. */
+	bottom: number;
+	/** How far to scroll the note to show the picture above the sheet, if it has not been done for it yet. */
+	reveal: number;
+}
+
 class ToolbarView implements PluginValue, ToolbarHost {
 	private readonly request: MeasureRequest<Measured | null>;
+	private readonly sheetRequest: MeasureRequest<SheetMeasured | null>;
+	/** Phones and tablets show the sheet instead of the floating toolbar. Obsidian decides this at startup. */
+	private readonly mobile = Platform.isMobile;
+	/** Phones and tablets: what moves the sheet or the note on screen. */
+	private readonly screen: ScreenWatch | null = null;
 	private readonly classes: MutationObserver;
 	private resizes: ResizeObserver | null = null;
 	private watched: HTMLElement | null = null;
-	/** The toolbar this view is showing, if any, and the start of the link it shows. */
-	private shownOn: PictureToolbar | null = null;
+	/** The toolbar or sheet this view is showing, if any, and the start of the link it shows. */
+	private shownOn: LayoutPanel | null = null;
 	private shownFrom: number | null = null;
 	/** Cache: locating a link scans the note, so do it once per (image, note text). */
 	private located: { embed: HTMLElement; doc: Text; result: LocatedLink | null } | null = null;
 	/** Start of the link whose toolbar the user closed with Esc; it stays closed until the selection changes. */
 	private dismissedAt: number | null = null;
+	/**
+	 * Phones and tablets: start of the link whose picture has been scrolled clear of the sheet, which happens
+	 * once per tap on it. Scrolling it back under the sheet afterwards is the user's choice.
+	 */
+	private revealedAt: number | null = null;
 	/** A measure request queued before destroy() may still run; it must not show the toolbar again. */
 	private destroyed = false;
 
@@ -90,6 +127,7 @@ class ToolbarView implements PluginValue, ToolbarHost {
 		private readonly plugin: ImageTextWrapPlugin,
 	) {
 		this.request = { key: this, read: () => this.read(), write: (m) => this.write(m) };
+		this.sheetRequest = { key: this, read: () => this.readSheet(), write: (m) => this.writeSheet(m) };
 		this.classes = new MutationObserver(() => this.schedule());
 		this.classes.observe(view.contentDOM, { attributes: true, attributeFilter: ['class'], subtree: true });
 		view.scrollDOM.addEventListener('scroll', this.schedule, { capture: true, passive: true });
@@ -98,6 +136,9 @@ class ToolbarView implements PluginValue, ToolbarHost {
 		view.scrollDOM.addEventListener('pointerdown', this.onPointerDown, true);
 		view.contentDOM.addEventListener('load', this.schedule, true);
 		view.dom.addEventListener('keydown', this.onKeyDown, true);
+		if (this.mobile) {
+			this.screen = new ScreenWatch(view.scrollDOM, { changed: this.schedule, keydown: this.onWindowKeyDown, tapped: this.onTap });
+		}
 		liveViews.add(this);
 		this.schedule();
 	}
@@ -109,6 +150,8 @@ class ToolbarView implements PluginValue, ToolbarHost {
 	update(update: ViewUpdate): void {
 		if (update.docChanged) {
 			if (this.dismissedAt !== null) this.dismissedAt = update.changes.mapPos(this.dismissedAt, 1);
+			// Kept at the start of its link when a layout change rewrites the link.
+			if (this.revealedAt !== null) this.revealedAt = update.changes.mapPos(this.revealedAt, -1);
 			this.located = null;
 		}
 		this.schedule();
@@ -116,8 +159,12 @@ class ToolbarView implements PluginValue, ToolbarHost {
 
 	readonly schedule = (): void => {
 		// The toolbar element is made here, outside the measure phase, which must not change the DOM.
-		if (this.plugin.settings.showToolbar && this.view.dom.isConnected) toolbarFor(this.view.dom.doc);
-		this.view.requestMeasure(this.request);
+		if (this.plugin.settings.showToolbar && this.view.dom.isConnected) {
+			if (this.mobile) sheetFor(this.view.dom.doc);
+			else toolbarFor(this.view.dom.doc);
+		}
+		if (this.mobile) this.view.requestMeasure(this.sheetRequest);
+		else this.view.requestMeasure(this.request);
 	};
 
 	/** After a workspace change: hide at once if this editor is no longer the active one, else re-measure. */
@@ -144,7 +191,8 @@ class ToolbarView implements PluginValue, ToolbarHost {
 		return result;
 	}
 
-	private read(): Measured | null {
+	/** The selected image and its link, when the toolbar or sheet may show for it (measure phase). */
+	private selection(): { embed: HTMLElement; located: LocatedLink } | null {
 		const view = this.view;
 		if (this.destroyed || !this.plugin.settings.showToolbar || !isLivePreview(view) || view.state.readOnly) return null;
 		if (!this.isVisible() || !this.isActiveEditor()) return null;
@@ -155,6 +203,14 @@ class ToolbarView implements PluginValue, ToolbarHost {
 		}
 		const located = this.locate(embed);
 		if (!located || located.unsupported || this.dismissedAt === located.link.from) return null;
+		return { embed, located };
+	}
+
+	private read(): Measured | null {
+		const view = this.view;
+		const selected = this.selection();
+		if (!selected) return null;
+		const { embed, located } = selected;
 
 		const toolbar = toolbars.get(view.dom.doc);
 		if (!toolbar) return null;
@@ -204,6 +260,73 @@ class ToolbarView implements PluginValue, ToolbarHost {
 		this.watch(m.embed);
 	}
 
+	/**
+	 * Phones and tablets: the sheet sits above the keyboard and Obsidian's bars, and shows while any of the
+	 * picture is on screen (above the keyboard, below the note's header), also behind the sheet itself.
+	 */
+	private readSheet(): SheetMeasured | null {
+		const view = this.view;
+		const selected = this.selection();
+		if (!selected) return null;
+		const { embed, located } = selected;
+		const sheet = sheets.get(view.dom.doc);
+		if (!sheet) return null;
+
+		const win = view.dom.win;
+		const scroller = view.scrollDOM.getBoundingClientRect();
+		// A phone's sidebar slides the whole note aside: the sheet goes away with it. (A tablet's floats over
+		// the note, and over the sheet, which is drawn below Obsidian's sidebars.)
+		if (scroller.left < -1 || scroller.right > win.innerWidth + 1) return null;
+		const screen = measureScreen(view.dom.doc, SHEET_GAP);
+		const bottom = sheetBottom(screen);
+		const keyboardTop = Math.min(
+			screen.height - screen.keyboard,
+			screen.visual ? screen.visual.top + screen.visual.height : Infinity,
+		);
+		const visible: Box = {
+			left: Math.max(scroller.left, 0),
+			top: Math.max(scroller.top, 0, headerBottom(view.scrollDOM)),
+			right: Math.min(scroller.right, win.innerWidth),
+			bottom: Math.min(scroller.bottom, keyboardTop),
+		};
+		let picture = pictureOf(embed).getBoundingClientRect();
+		if (picture.width === 0 || picture.height === 0) picture = embed.getBoundingClientRect();
+		if (!visiblePart(box(picture), visible)) return null;
+
+		const from = located.link.from;
+		const sheetTop = screen.height - bottom - sheet.el.offsetHeight;
+		return {
+			sheet,
+			embed,
+			subject: { from, layout: located.link.layout, doc: view.state.doc },
+			bottom,
+			reveal: this.revealedAt === from ? 0 : revealScroll(box(picture), visible.top, sheetTop, SHEET_GAP),
+		};
+	}
+
+	private writeSheet(m: SheetMeasured | null): void {
+		if (!m || this.destroyed) {
+			this.release();
+			return;
+		}
+		if (this.shownOn && this.shownOn !== m.sheet) this.release();
+		m.sheet.host = this;
+		m.sheet.render(m.subject);
+		m.sheet.showAt(m.bottom);
+		this.shownOn = m.sheet;
+		this.shownFrom = m.subject.from;
+		this.watch(m.embed);
+		// Once per tap on a picture: a picture the sheet would cover scrolls up into view. A write keeps the
+		// view still (writeLayout), and scrolling the note afterwards is left alone.
+		if (this.revealedAt !== m.subject.from) {
+			this.revealedAt = m.subject.from;
+			if (m.reveal > 0) {
+				const still = this.view.dom.win.matchMedia('(prefers-reduced-motion: reduce)').matches;
+				this.view.scrollDOM.scrollBy({ top: m.reveal, behavior: still ? 'auto' : 'smooth' });
+			}
+		}
+	}
+
 	/** Hides the toolbar if this view is the one showing it. */
 	private release(): void {
 		this.watch(null);
@@ -240,7 +363,9 @@ class ToolbarView implements PluginValue, ToolbarHost {
 	 * The writes only touch the toolbar, which nothing here observes.
 	 */
 	private readonly onResize = (): void => {
-		if (!this.destroyed) this.write(this.read());
+		if (this.destroyed) return;
+		if (this.mobile) this.writeSheet(this.readSheet());
+		else this.write(this.read());
 	};
 
 	apply(subject: ToolbarSubject, layout: Layout): void {
@@ -270,8 +395,23 @@ class ToolbarView implements PluginValue, ToolbarHost {
 		releaseScrollPosition(this.view);
 	};
 
+	/**
+	 * Phones and tablets: Esc from a hardware keyboard with the focus outside the editor. From inside it,
+	 * onKeyDown has already dismissed the sheet, and this finds nothing shown.
+	 */
+	private readonly onWindowKeyDown = (e: KeyboardEvent): void => {
+		if (e.key === 'Escape' && this.shownOn && !this.shownOn.keyAlreadyUsed(e)) this.dismiss();
+	};
+
+	/** Phones and tablets: a tap in the note (a scroll makes no click), which may select a picture anew. */
+	private readonly onTap = (): void => {
+		this.revealedAt = null;
+		this.schedule();
+	};
+
 	destroy(): void {
 		this.destroyed = true;
+		this.screen?.destroy();
 		this.classes.disconnect();
 		this.view.scrollDOM.removeEventListener('scroll', this.schedule, { capture: true });
 		this.view.scrollDOM.removeEventListener('wheel', this.onWheel, { capture: true });
@@ -293,6 +433,8 @@ export function toolbarExtension(plugin: ImageTextWrapPlugin): Extension {
 		workspace.on('window-close', (win) => {
 			toolbars.get(win.doc)?.destroy();
 			toolbars.delete(win.doc);
+			sheets.get(win.doc)?.destroy();
+			sheets.delete(win.doc);
 		}),
 	);
 	return [ViewPlugin.define((view) => new ToolbarView(view, plugin)), keepScrollExtension()];
