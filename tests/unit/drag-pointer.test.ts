@@ -2,7 +2,7 @@
 // that keeps its listeners in a list: no browser needed.
 import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { swallowNextClick, trackPointer, type PointerHandlers } from '../../src/live-preview/drag/pointer.ts';
+import { isShown, swallowNextClick, trackPointer, type PointerHandlers } from '../../src/live-preview/drag/pointer.ts';
 
 interface Listener {
 	type: string;
@@ -65,9 +65,48 @@ class FakeTarget {
 	}
 }
 
+/** Stands in for the browser's ResizeObserver: notify() is the browser reporting a size change after layout. */
+class FakeResizeObserver {
+	observed: unknown[] = [];
+
+	constructor(private readonly callback: () => void) {}
+
+	observe(el: unknown): void {
+		this.observed.push(el);
+	}
+
+	disconnect(): void {
+		this.observed = [];
+	}
+
+	notify(): void {
+		if (this.observed.length) this.callback();
+	}
+}
+
 class FakeWindow extends FakeTarget {
+	/** Every ResizeObserver made from this window. */
+	readonly observers: FakeResizeObserver[] = [];
+	readonly ResizeObserver = ((observers) =>
+		class extends FakeResizeObserver {
+			constructor(callback: () => void) {
+				super(callback);
+				observers.push(this);
+			}
+		})(this.observers);
+
 	setTimeout(fn: () => void, ms: number): ReturnType<typeof setTimeout> {
 		return setTimeout(fn, ms);
+	}
+}
+
+/** An editor as the page draws it: in the page or not, with a box (display: none on it or a parent leaves none). */
+class FakeEditor {
+	isConnected = true;
+	drawn = true;
+
+	getClientRects(): { length: number } {
+		return { length: this.drawn ? 1 : 0 };
 	}
 }
 
@@ -79,8 +118,8 @@ class FakeDocument extends FakeTarget {
 const asDoc = (doc: FakeDocument) => doc as unknown as Document;
 const press = (pointerType: string, pointerId = 1) => ({ pointerId, pointerType, target: null, clientX: 0, clientY: 0 }) as unknown as PointerEvent;
 
-/** Follows a press and records how it ended. */
-function follow(doc: FakeDocument, pointerType: string, finger: boolean) {
+/** Follows a press (in `editor`, when given) and records how it ended. */
+function follow(doc: FakeDocument, pointerType: string, finger: boolean, editor?: FakeEditor) {
 	const ends: string[] = [];
 	const handlers: PointerHandlers = {
 		onMove: () => {},
@@ -88,7 +127,7 @@ function follow(doc: FakeDocument, pointerType: string, finger: boolean) {
 		onCancel: (gone) => ends.push(gone ? 'cancel: gone' : 'cancel: still down'),
 	};
 	const touch = finger ? { holding: () => true, onLongPress: () => {} } : undefined;
-	const pointer = trackPointer(asDoc(doc), press(pointerType), handlers, touch);
+	const pointer = trackPointer(asDoc(doc), press(pointerType), handlers, touch, editor as unknown as Element | undefined);
 	return { ends, pointer };
 }
 
@@ -135,6 +174,65 @@ test('the other cancels leave the pointer down: its release and its click still 
 	const e = follow(released, 'pen', false);
 	released.fire('pointerup', { pointerId: 1 });
 	assert.deepEqual(e.ends, ['end']);
+});
+
+test('an editor is drawn while it is in the page and has a box', () => {
+	const editor = new FakeEditor();
+	const shown = () => isShown(editor as unknown as Element);
+	assert.equal(shown(), true);
+	// Reading view, or its tab in the background: display: none on a parent.
+	editor.drawn = false;
+	assert.equal(shown(), false);
+	editor.drawn = true;
+	editor.isConnected = false;
+	assert.equal(shown(), false);
+});
+
+test('the editor going out of sight ends the press at once, with the pointer still down', () => {
+	for (const [pointerType, finger] of [
+		['touch', true],
+		['mouse', false],
+	] as const) {
+		for (const away of ['hidden', 'taken out'] as const) {
+			const doc = new FakeDocument();
+			const editor = new FakeEditor();
+			const { ends, pointer } = follow(doc, pointerType, finger, editor);
+			const [observer] = doc.defaultView.observers;
+			assert.ok(observer, 'the editor is watched, from its own window');
+			assert.deepEqual(observer.observed, [editor]);
+			// The first report, and size changes that leave it drawn (a rotation, the keyboard), change nothing.
+			observer.notify();
+			observer.notify();
+			assert.deepEqual(ends, []);
+			if (away === 'hidden') editor.drawn = false;
+			else editor.isConnected = false;
+			observer.notify();
+			// A cancel that leaves the pointer down: the click its release brings is dropped (gesture.ts), as after Escape.
+			assert.deepEqual(ends, ['cancel: still down'], `${pointerType}, ${away}`);
+			assert.equal(pointer.finished, true);
+			// Nothing is left watching or listening.
+			assert.deepEqual(observer.observed, []);
+			assert.equal(doc.count(), 0);
+			assert.equal(doc.defaultView.count(), 0);
+			observer.notify();
+			doc.fire('pointerup', { pointerId: 1 });
+			assert.deepEqual(ends, ['cancel: still down']);
+		}
+	}
+});
+
+test('a press that ends the usual way stops watching the editor', () => {
+	const doc = new FakeDocument();
+	const editor = new FakeEditor();
+	const { ends } = follow(doc, 'touch', true, editor);
+	const [observer] = doc.defaultView.observers;
+	doc.fire('pointerup', { pointerId: 1 });
+	assert.deepEqual(ends, ['end']);
+	assert.deepEqual(observer!.observed, []);
+	// Switched to Reading view later: nothing more happens.
+	editor.drawn = false;
+	observer!.notify();
+	assert.deepEqual(ends, ['end']);
 });
 
 test('after a cancel with the finger still down, the click its release brings is dropped, and only that one', () => {

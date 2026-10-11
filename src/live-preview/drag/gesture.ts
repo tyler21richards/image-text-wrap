@@ -157,6 +157,8 @@ export class ImageDrag {
 		this.draggableBefore = img.getAttribute('draggable');
 		img.setAttribute('draggable', 'false');
 		const touch = this.finger ? { holding: () => this.lifted, onLongPress: () => this.lift() } : undefined;
+		// The editor going out of sight (Reading view, another tab in front) ends the press at once, as Escape does: its
+		// state does not change, so update() in index.ts never hears of it.
 		this.pointer = trackPointer(
 			this.doc,
 			start,
@@ -166,6 +168,7 @@ export class ImageDrag {
 				onCancel: (gone) => this.onCancel(gone),
 			},
 			touch,
+			view.dom,
 		);
 		if (this.finger) {
 			embed.addClass(PRESSED_CLASS);
@@ -173,7 +176,7 @@ export class ImageDrag {
 		}
 	}
 
-	/** Ends the gesture without writing anything (a swipe, editor destroyed, plugin unloaded, mode changed). */
+	/** Ends the gesture without writing anything (a swipe, editor destroyed, plugin unloaded, Source mode). */
 	cancel(): void {
 		this.quiet = true;
 		this.pointer.cancel();
@@ -264,10 +267,10 @@ export class ImageDrag {
 	}
 
 	/**
-	 * The press ended without a drop. While the pointer is still down (Escape, the app hidden) the click its release
-	 * brings must not select or open the image, so that click is dropped. A pointer that is `gone` (pointercancel: the
-	 * system took the touch over) sends no release and no click, and nothing waits for one: it would eat the next
-	 * click, one made with the keyboard too.
+	 * The press ended without a drop. While the pointer is still down (Escape, the app or the editor hidden) the click
+	 * its release brings must not select or open the image, or what is shown now under it, so that click is dropped. A
+	 * pointer that is `gone` (pointercancel: the system took the touch over) sends no release and no click, and
+	 * nothing waits for one: it would eat the next click, one made with the keyboard too.
 	 */
 	private onCancel(gone: boolean): void {
 		const guard = !this.quiet && !gone;

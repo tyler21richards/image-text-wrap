@@ -33,6 +33,15 @@ export default async ({ page, setWindowSize, openNote, watchErrors, reloadPlugin
 		});
 	};
 	const center = (g) => ({ x: g.img.left + g.img.width / 2, y: g.img.top + g.img.height / 2 });
+	/** Back to one pane with the fixture in Live Preview, after a test that switched, opened or closed panes. */
+	const restore = async () => {
+		await page.evaluate(() => {
+			const leaves = [];
+			app.workspace.iterateRootLeaves((leaf) => leaves.push(leaf));
+			for (const leaf of leaves.slice(1)) leaf.detach();
+		});
+		await openNote(page, d.FIXTURE, 'live');
+	};
 	const run = async (name, fn) => {
 		try {
 			results.push({ name, ...(await fn()) });
@@ -191,6 +200,78 @@ export default async ({ page, setWindowSize, openNote, watchErrors, reloadPlugin
 		await page.keyboard.press('Escape');
 		return { pass: at > 0 && selected, evidence: `moved to line ${at}; clicking it afterwards selects it=${selected}` };
 	});
+
+	// N10: the editor going out of sight, or away, during a drag ends it at once, with the button still down and the
+	// mouse still: no ghost, drop line, outline or label over what is shown now, nothing dimmed, nothing written, and
+	// the next real click goes through. Reading view and another tab only hide the editor (its state does not change);
+	// another note in the pane and closing the pane are the controls.
+	for (const [name, how] of [
+		['Reading view (Cmd+E) mid-drag: the drag ends at once, nothing written', 'key'],
+		['another tab in front mid-drag: the drag ends at once, nothing written', 'tab'],
+		['another note in this pane mid-drag: the drag ends at once, nothing written', 'note'],
+		['pane closed mid-drag: the drag ends at once, nothing written', 'close'],
+	]) {
+		await run(name, async () => {
+			try {
+				await reset();
+				const g = await startDrag(LANDSCAPE, RAIN);
+				const during = await d.dragState(page);
+				await page.evaluate(() => {
+					window.__itwPressedIn = app.workspace.activeLeaf.view.editor.cm.dom;
+				});
+				if (how === 'key') await page.keyboard.press('Meta+E');
+				else if (how === 'tab')
+					await page.evaluate(() =>
+						app.workspace.getLeaf('tab').openFile(app.vault.getAbstractFileByPath('Plain images.md'), { state: { mode: 'source', source: false }, active: true }),
+					);
+				else if (how === 'note')
+					await page.evaluate(() => app.workspace.activeLeaf.openFile(app.vault.getAbstractFileByPath('Plain images.md'), { state: { mode: 'source', source: false } }));
+				else await page.evaluate(() => app.workspace.activeLeaf.detach());
+				await d.frames(page, 2);
+				const atOnce = await d.dragState(page);
+				const shown = await page.evaluate(() => {
+					const editor = window.__itwPressedIn;
+					delete window.__itwPressedIn;
+					return {
+						mode: app.workspace.activeLeaf?.view?.getMode?.() ?? null,
+						file: app.workspace.getActiveFile()?.path ?? null,
+						editorInPage: editor.isConnected,
+						editorDrawn: editor.getClientRects().length > 0,
+					};
+				});
+				const switched =
+					how === 'key'
+						? shown.mode === 'preview' && shown.file === d.FIXTURE && !shown.editorDrawn
+						: how === 'tab'
+							? shown.file === 'Plain images.md' && !shown.editorDrawn
+							: how === 'note'
+								? shown.file === 'Plain images.md'
+								: !shown.editorInPage;
+				await page.mouse.move(g.column.left + 120, g.scroller.top + 300, { steps: 6 });
+				await d.frames(page, 2);
+				const moved = await d.dragState(page);
+				await page.mouse.up();
+				await d.sleep(300);
+				const after = await d.dragState(page);
+				const fileText = await page.evaluate(() => app.vault.read(app.vault.getAbstractFileByPath('Fixture.md')));
+				// Back in the note: a real click on the image still selects it (nothing waits to eat it).
+				await restore();
+				await d.scrollToLine(page, LANDSCAPE - 1, 40);
+				const g2 = await d.geometry(page, LANDSCAPE);
+				await page.mouse.click(center(g2).x, center(g2).y);
+				await d.sleep(250);
+				const selected = await page.evaluate(() => !!document.querySelector('.image-embed.is-selected'));
+				const clean = (s) => s.overlays === 0 && s.bodyClasses.length === 0 && s.dimmed === 0;
+				return {
+					pass: !!during.ghost && !!during.bar && switched && clean(atOnce) && clean(moved) && clean(after) && after.cursor === 'auto' && fileText === original && selected,
+					evidence: `dragging: ghost=${!!during.ghost}, indicator "${during.label?.text ?? ''}"; then ${how} (now ${JSON.stringify(shown)}, switched=${switched}); two frames later, mouse still: overlays=${atOnce.overlays}, body classes ${JSON.stringify(atOnce.bodyClasses)}, dimmed=${atOnce.dimmed}; after moving: overlays=${moved.overlays}; after release: overlays=${after.overlays}, cursor=${after.cursor}; Fixture.md on disk unchanged=${fileText === original}; a click on the image afterwards selects it=${selected}`,
+				};
+			} finally {
+				await page.mouse.up().catch(() => {});
+				await restore();
+			}
+		});
+	}
 
 	// A pen (a graphics tablet, a Surface pen) on a desktop drags as the mouse does: no long press, the drag starts
 	// past 5 px, and the browser's own image drag never starts (Obsidian's would drop a second copy of the link into
