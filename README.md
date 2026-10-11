@@ -69,7 +69,8 @@ The size stays last, so Obsidian keeps applying it. If you remove the plugin, yo
 
 ## Known limits
 
-- Images inside tables, callouts, quotes, lists and headings, and images in embedded notes, stay in line with text. The toolbar and dragging do not act on them.
+- Images inside tables, callouts, quotes, lists and headings stay in line with text. The toolbar and dragging do not act on them.
+- Images in an embedded note (`![[Other note]]`) are shown with their layout, but you change them in that note itself: the toolbar and dragging do not act on them where the note is embedded.
 - A dragged image lands at the start of a block, not in the middle of a paragraph, because a note is one stream of text.
 - Live Preview shows a blank line as slightly taller than the paragraph spacing in Reading view, so the text beside a tall image can break at a slightly different word.
 - In Reading view, right-clicking an image opens Obsidian's image viewer, so the layout choices are not in a menu there. Switch to Live Preview to change a layout.
@@ -82,6 +83,8 @@ The size stays last, so Obsidian keeps applying it. If you remove the plugin, yo
 ## Installing
 
 Image Text Wrap is in beta and not yet in Obsidian's community plugin directory. It needs Obsidian 1.13 or later, on desktop.
+
+If you have never used community plugins in this vault, first open **Settings → Community plugins** and choose **Turn on community plugins** (called **Exit Restricted mode** in recent versions of Obsidian). Until you do, that page has no Browse button and no list of installed plugins.
 
 **With BRAT (easiest, and it keeps the plugin up to date):**
 
