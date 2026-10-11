@@ -2,11 +2,14 @@
 //   node scripts/obsidian.mjs run tests/e2e/toolbar-basic.mjs
 import {
 	clickButton,
+	clickMenuItem,
 	clickText,
 	diffLines,
+	drawn,
 	freshNote,
 	geometryProblems,
 	pressed,
+	probe,
 	showImage,
 	sleep,
 	sourceNote,
@@ -46,16 +49,18 @@ function dropdown(page) {
 	});
 }
 
-export default async (h) => {
+/** Scrolls the picture of LINK into view and returns its rectangle once drawn; throws if it is not. */
+const showPicture = async (page) => drawn(await showImage(page, LINK), LINK);
+
+export default probe(async (h, check, restore) => {
 	const { page } = h;
 	const errors = h.watchErrors(page);
 	await h.setWindowSize(page, 1280, 900);
-	const results = [];
-	const check = (test, ok, evidence) => results.push({ test, result: ok ? 'pass' : 'fail', evidence });
 	const original = sourceNote(NOTE);
+	restore(() => h.setNote(page, NOTE, original));
 
 	await freshNote(page, h, NOTE);
-	let img = await showImage(page, LINK);
+	let img = await showPicture(page);
 	await page.mouse.click(img.x, img.y);
 	await sleep(400);
 	let s = await state(page);
@@ -82,7 +87,6 @@ export default async (h) => {
 	for (const [label, expected] of actions) {
 		const before = await state(page);
 		if (label === 'Large (24 px)') {
-			const { clickMenuItem } = await import('./toolbar-helpers.mjs');
 			check('spacing menu lists the four choices, medium checked', before.menu.map((m) => m.title).join('|') === 'None|Small (8 px)|Medium (16 px)|Large (24 px)' && before.menu.find((m) => m.checked)?.title === 'Medium (16 px)', before.menu);
 			await clickMenuItem(page, label);
 		} else {
@@ -120,7 +124,7 @@ export default async (h) => {
 	// Esc hides the toolbar but leaves Obsidian's selection alone; a new click brings it back. The pointer
 	// rests on a button meanwhile: its tooltip goes away with the toolbar although the mouse does not move.
 	await clickText(page);
-	img = await showImage(page, LINK);
+	img = await showPicture(page);
 	await page.mouse.click(img.x, img.y);
 	await sleep(350);
 	const tipBefore = await hoverButton(page, 'Top and bottom');
@@ -179,6 +183,30 @@ export default async (h) => {
 	await sleep(300);
 	check('(cleanup) undo restores the note', (await state(page)).doc === docBefore, diffLines(docBefore, (await state(page)).doc));
 
+	// Esc closes the innermost thing open, one per press (as in Word): the Spacing dropdown first, then the
+	// toolbar. The picture stays selected throughout.
+	await clickText(page);
+	img = await showPicture(page);
+	await page.mouse.click(img.x, img.y);
+	await sleep(350);
+	await clickButton(page, 'Wrap text left');
+	await clickButton(page, 'Spacing');
+	const escOpen = await dropdown(page);
+	await page.keyboard.press('Escape');
+	await sleep(300);
+	const escFirst = { ...(await dropdown(page)), selected: (await state(page)).selected };
+	await page.keyboard.press('Escape');
+	await sleep(300);
+	const escSecond = { ...(await dropdown(page)), selected: (await state(page)).selected };
+	check(
+		'Esc closing the Spacing dropdown keeps the toolbar; the next Esc hides it',
+		escOpen.open && !escFirst.open && escFirst.visible && escFirst.expanded === 'false' && escFirst.selected && !escSecond.visible && escSecond.selected,
+		{ escOpen, escFirst, escSecond },
+	);
+	await page.keyboard.press('Meta+z');
+	await sleep(300);
+	check('(cleanup) undo removes the wrap again', (await state(page)).doc === original, diffLines(original, (await state(page)).doc));
+
 	// Switching the note to Source mode or Reading view hides it.
 	await page.evaluate(() => app.commands.executeCommandById('editor:toggle-source'));
 	await sleep(400);
@@ -187,7 +215,7 @@ export default async (h) => {
 	await page.evaluate(() => app.commands.executeCommandById('editor:toggle-source'));
 	await sleep(400);
 	await clickText(page);
-	img = await showImage(page, LINK);
+	img = await showPicture(page);
 	await page.mouse.click(img.x, img.y);
 	await sleep(350);
 	await page.evaluate(() => app.commands.executeCommandById('markdown:toggle-preview'));
@@ -198,6 +226,4 @@ export default async (h) => {
 	await sleep(500);
 
 	check('no console errors', errors.length === 0, errors);
-	await h.setNote(page, NOTE, original);
-	return results;
-};
+});

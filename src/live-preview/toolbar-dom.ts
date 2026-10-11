@@ -33,6 +33,8 @@ export interface ToolbarHost {
 }
 
 const HIDDEN = 'itw-toolbar-hidden';
+/** Obsidian 1.14.4: a menu it shows (not a native one) is body > div.menu while it is open. */
+const MENU = 'menu';
 const ACTIVE = 'is-active';
 const DISABLED = 'is-disabled';
 
@@ -48,6 +50,10 @@ export class PictureToolbar {
 	private shownAt: Placement | null = null;
 	/** The button (or the toolbar itself) the pointer is over, whose tooltip Obsidian may be showing. */
 	private pointed: HTMLElement | null = null;
+	/** Watches this window's Obsidian menus come and go (see keyAlreadyUsed). */
+	private readonly menus: MutationObserver;
+	/** When a menu of this window last closed, on the window's performance.now() clock. */
+	private menuClosedAt = -Infinity;
 
 	constructor(readonly doc: Document) {
 		this.el = doc.body.createDiv({
@@ -71,7 +77,7 @@ export class PictureToolbar {
 		this.el.addEventListener('pointerdown', keepFocus);
 		this.el.addEventListener('mousedown', keepFocus);
 		this.el.addEventListener('keydown', (e) => {
-			if (e.key === 'Escape') this.host?.dismiss();
+			if (e.key === 'Escape' && !this.keyAlreadyUsed(e)) this.host?.dismiss();
 		});
 		const buttons = [...this.wrapButtons.values(), this.spacingButton];
 		this.el.addEventListener('pointerover', (e) => {
@@ -80,6 +86,30 @@ export class PictureToolbar {
 		this.el.addEventListener('pointerleave', () => {
 			this.pointed = null;
 		});
+
+		// Obsidian puts every menu it shows (the Spacing dropdown, an image's right-click menu) straight in
+		// the window's body and takes it out when it closes. The window's own observer, for pop-out windows.
+		const win = doc.win as Window & { MutationObserver?: typeof MutationObserver };
+		this.menus = new (win.MutationObserver ?? MutationObserver)((records) => {
+			const closed = records.some((r) => Array.from(r.removedNodes).some((n) => n.instanceOf(HTMLElement) && n.hasClass(MENU)));
+			if (closed) this.menuClosedAt = win.performance.now();
+		});
+		this.menus.observe(doc.body, { childList: true });
+	}
+
+	/**
+	 * True when this key press has already been used, for instance to close a menu. Esc closes the innermost
+	 * thing open, one per press (like Word's Layout Options): the press that closes the Spacing dropdown or
+	 * the image's right-click menu leaves the toolbar shown, and the next one hides it.
+	 *
+	 * Obsidian closes an open menu on Esc before the key reaches the editor (its key handling listens on the
+	 * window, first), and lets the key go on without marking it. The removal is noted by the observer above,
+	 * whose callback runs as soon as Obsidian's listener returns, before the editor's listeners. An event's
+	 * timeStamp and performance.now() share the window's clock, so a menu closed after the key was pressed
+	 * was closed by it.
+	 */
+	keyAlreadyUsed(e: KeyboardEvent): boolean {
+		return e.defaultPrevented || this.menuClosedAt >= e.timeStamp;
 	}
 
 	private addButton(icon: string, label: string): HTMLButtonElement {
@@ -137,6 +167,7 @@ export class PictureToolbar {
 	destroy(): void {
 		this.menu?.hide();
 		this.endHover();
+		this.menus.disconnect();
 		this.el.remove();
 		this.host = null;
 	}

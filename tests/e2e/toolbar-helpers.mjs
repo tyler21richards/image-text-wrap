@@ -9,19 +9,31 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * Wraps a probe body `(h, check) => …` so it returns [{ test, result, evidence }], including the checks
- * made before a failure and the failure itself.
+ * Wraps a probe body `(h, check, restore) => …` so it returns [{ test, result, evidence }], including the
+ * checks made before a failure and the failure itself. `restore(fn)` registers a step that puts back
+ * something the probe changed (a setting, a patched method, an extra pane): every such step runs when the
+ * body ends, last registered first, also when the body stopped early.
  */
 export function probe(body) {
 	return async (h) => {
 		const results = [];
 		const check = (test, ok, evidence) => results.push({ test, result: ok ? 'pass' : 'fail', evidence });
+		const steps = [];
+		const restore = (fn) => steps.push(fn);
 		try {
-			await body(h, check);
+			await body(h, check, restore);
 		} catch (e) {
 			const shot = join(process.env.ITW_STATE_DIR ?? ROOT, `probe-error-${process.env.ITW_INSTANCE ?? 0}.png`);
 			await h.page.screenshot({ path: shot }).catch(() => {});
 			results.push({ test: 'probe ran to the end', result: 'fail', evidence: `${String(e?.stack ?? e)} (screenshot: ${shot})` });
+		} finally {
+			for (const step of steps.reverse()) {
+				try {
+					await step();
+				} catch (e) {
+					results.push({ test: 'probe put back what it changed', result: 'fail', evidence: String(e?.stack ?? e) });
+				}
+			}
 		}
 		return results;
 	};
@@ -82,10 +94,26 @@ export function diffLines(before, after) {
 }
 
 /**
- * Scrolls the image link that starts at the `nth` (0-based) occurrence of `needle` in the active note
- * into view (centred unless `y` is given) and returns its picture's rectangle and link position.
+ * How long the waits below give the page, in ms: 8 s, or ITW_WAIT_MS. A loaded machine can take well over
+ * the usual few hundred ms to parse and draw a part of the note far from where it was.
  */
-export async function showImage(page, needle, nth = 0, y = 'center') {
+export const WAIT_MS = Number(process.env.ITW_WAIT_MS) || 8000;
+
+/**
+ * Polls `read` (an async function) every 100 ms until it returns something truthy, and returns that; after
+ * `timeout` ms returns the last value. Used instead of fixed sleeps before reading the page.
+ */
+export async function waitFor(read, timeout = WAIT_MS) {
+	const start = Date.now();
+	for (;;) {
+		const value = await read();
+		if (value || Date.now() - start > timeout) return value;
+		await sleep(100);
+	}
+}
+
+/** Scrolls the link at the `nth` (0-based) occurrence of `needle` in the active note into view (centred unless `y` is given). */
+export async function scrollToLink(page, needle, nth = 0, y = 'center') {
 	await page.evaluate(
 		({ needle, nth, y }) => {
 			const cm = app.workspace.activeLeaf.view.editor.cm;
@@ -97,8 +125,38 @@ export async function showImage(page, needle, nth = 0, y = 'center') {
 		},
 		{ needle, nth, y },
 	);
-	await sleep(400);
-	return imageRect(page, needle, nth);
+}
+
+/**
+ * Waits until the picture of the nth `needle` link is drawn and holds still (the same rectangle twice in a
+ * row), and returns imageRect; after `timeout` ms returns the last { found: false } or moving rectangle.
+ */
+export async function waitForImage(page, needle, nth = 0, timeout = WAIT_MS) {
+	let last = null;
+	const settled = await waitFor(async () => {
+		const r = await imageRect(page, needle, nth);
+		const still = r.found && last?.found && r.top === last.top && r.left === last.left && r.bottom === last.bottom;
+		last = r;
+		return still ? r : null;
+	}, timeout);
+	return settled ?? last;
+}
+
+/**
+ * Scrolls the image link that starts at the `nth` (0-based) occurrence of `needle` in the active note
+ * into view (centred unless `y` is given) and returns its picture's rectangle and link position, once the
+ * picture is drawn and still ({ found: false } if it is not drawn within `timeout` ms).
+ */
+export async function showImage(page, needle, nth = 0, y = 'center', timeout = WAIT_MS) {
+	await scrollToLink(page, needle, nth, y);
+	await sleep(150);
+	return waitForImage(page, needle, nth, timeout);
+}
+
+/** The rectangle from showImage / imageRect, or a clear error when the picture is not drawn (a probe is about to click it). */
+export function drawn(rect, needle) {
+	if (!rect?.found) throw new Error(`the picture of ${needle} is not drawn on screen (link at ${rect?.pos})`);
+	return rect;
 }
 
 /** The rectangle of the picture whose link is the nth occurrence of `needle`, without scrolling. */
@@ -216,28 +274,31 @@ export function pressed(s) {
 	return s.buttons.filter((b) => b.pressed === 'true').map((b) => b.label);
 }
 
-/** Clicks plain text in the note (deselects any image). */
-export async function clickText(page) {
-	const p = await page.evaluate(() => {
-		const cm = app.workspace.activeLeaf.view.editor.cm;
-		const sr = cm.scrollDOM.getBoundingClientRect();
-		const lines = [...cm.contentDOM.querySelectorAll('.cm-line')].filter((l) => {
-			const r = l.getBoundingClientRect();
-			return !l.querySelector('.image-embed, .cm-embed-block') && l.textContent.length > 40 && r.top > sr.top + 60 && r.bottom < sr.bottom - 40;
-		});
-		const toolbar = [...document.querySelectorAll('.itw-toolbar')].find((t) => !t.classList.contains('itw-toolbar-hidden'));
-		const tr = toolbar?.getBoundingClientRect();
-		for (const l of lines) {
-			const r = l.getBoundingClientRect();
-			for (const x of [r.left + 30, (r.left + r.right) / 2, r.right - 30]) {
-				const y = r.top + 10;
-				if (tr && x > tr.left - 4 && x < tr.right + 4 && y > tr.top - 4 && y < tr.bottom + 4) continue;
-				const hit = document.elementFromPoint(x, y);
-				if (hit && hit.closest('.cm-line') === l && !hit.closest('.image-embed')) return { x, y };
+/** Clicks plain text in the note (deselects any image). Waits up to `timeout` ms for such text to be drawn. */
+export async function clickText(page, timeout = 3000) {
+	const find = () =>
+		page.evaluate(() => {
+			const cm = app.workspace.activeLeaf.view.editor.cm;
+			const sr = cm.scrollDOM.getBoundingClientRect();
+			const lines = [...cm.contentDOM.querySelectorAll('.cm-line')].filter((l) => {
+				const r = l.getBoundingClientRect();
+				return !l.querySelector('.image-embed, .cm-embed-block') && l.textContent.length > 40 && r.top > sr.top + 60 && r.bottom < sr.bottom - 40;
+			});
+			const toolbar = [...document.querySelectorAll('.itw-toolbar')].find((t) => !t.classList.contains('itw-toolbar-hidden'));
+			const tr = toolbar?.getBoundingClientRect();
+			for (const l of lines) {
+				const r = l.getBoundingClientRect();
+				for (const x of [r.left + 30, (r.left + r.right) / 2, r.right - 30]) {
+					const y = r.top + 10;
+					if (tr && x > tr.left - 4 && x < tr.right + 4 && y > tr.top - 4 && y < tr.bottom + 4) continue;
+					const hit = document.elementFromPoint(x, y);
+					if (hit && hit.closest('.cm-line') === l && !hit.closest('.image-embed')) return { x, y };
+				}
 			}
-		}
-		throw new Error('no plain text on screen to click');
-	});
+			return null;
+		});
+	const p = await waitFor(find, timeout);
+	if (!p) throw new Error('no plain text on screen to click');
 	await page.mouse.click(p.x, p.y);
 	await sleep(300);
 }
