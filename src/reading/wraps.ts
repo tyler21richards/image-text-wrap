@@ -1,5 +1,5 @@
 // What Reading view and PDF export need to know about a note's wrapped images. Pure, no Obsidian imports.
-import { findImageLinks, layoutFromSegments, parseImageLinkAt, type Wrap } from '../grammar';
+import { findImageLinks, layoutFromSegments, parseImageLinkAt, type Layout, type Wrap } from '../grammar';
 import { scanLines } from '../markdown/lines';
 
 /** Only images that float (wrap left or right) need the text-beside-a-float fixes. */
@@ -34,10 +34,15 @@ export function embedHasFloat(original: string): boolean {
 	return !!link && FLOATS.has(link.layout.wrap);
 }
 
+/** The layout of a rendered image from its alt attribute ("A caption|wrap-right|gap-24"), as styles.css reads it. */
+export function layoutFromAlt(alt: string | null): Layout {
+	return layoutFromSegments(alt ? alt.split('|') : []);
+}
+
 /** The wrap of a rendered image from its alt attribute ("A caption|wrap-right"), as styles.css reads it. */
 export function wrapFromAlt(alt: string | null): Wrap {
 	if (!alt) return 'none';
-	return layoutFromSegments(alt.split('|')).wrap;
+	return layoutFromAlt(alt).wrap;
 }
 
 /** What a top-level element of a PDF export is, as far as page breaks go. */

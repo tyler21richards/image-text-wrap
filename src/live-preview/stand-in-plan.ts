@@ -14,11 +14,11 @@
 
 import type { ChangeDesc, Text } from '@codemirror/state';
 import { findImageLinks, isSizeSegment, type ImageLink } from '../grammar';
-import { isPlainLine, lastLineAffected, scanLines } from '../markdown/lines';
+import { isPlainLine, lastLineAffected, opensOrCloses, scanLines } from '../markdown/lines';
 
 export type FloatSide = 'left' | 'right';
 
-/** A line that holds nothing but one image wrapped left or right: its picture floats out of it. */
+/** An image wrapped left or right in body text: its picture floats out of its line. */
 export interface FloatAnchor {
 	/** 0-based line index. */
 	line: number;
@@ -30,10 +30,17 @@ export interface FloatAnchor {
 	side: FloatSide;
 	gap: number;
 	link: ImageLink;
+	/**
+	 * The line holds nothing but images wrapped left or right (one, or several), so it takes no height
+	 * (styles.css) and a picture never drawn can be placed from it. A picture that shares its line with
+	 * text, or with an image in line, starts wherever it lands in that line: it is only known once drawn.
+	 */
+	alone: boolean;
 }
 
 /**
- * Wrapped image lines in body text. Lines in code, math, comments, frontmatter, lists, quotes,
+ * Images wrapped left or right in body text: on a line of their own, on a line of several wrapped
+ * images, or inside a sentence. Lines in code, math, comments, frontmatter, lists, quotes, footnotes,
  * tables and headings are left out: there the picture either does not float or stays inside its line.
  */
 export function findFloatAnchors(lines: readonly string[]): FloatAnchor[] {
@@ -43,23 +50,28 @@ export function findFloatAnchors(lines: readonly string[]): FloatAnchor[] {
 		// Every anchor line holds one of these; editKeepsAnchors relies on that.
 		if (!text.includes('wrap-left') && !text.includes('wrap-right')) return;
 		const links = findImageLinks(text);
-		if (links.length !== 1) return;
-		const link = links[0]!;
-		if (text.slice(0, link.from).trim() || text.slice(link.to).trim()) return;
-		const wrap = link.layout.wrap;
-		if (wrap !== 'left' && wrap !== 'right') return;
+		const floats = links.filter((link) => link.layout.wrap === 'left' || link.layout.wrap === 'right');
+		if (floats.length === 0) return;
 		infos ??= scanLines(lines);
 		const info = infos[line];
 		if (!info || info.context !== 'text' || info.kind !== 'paragraph') return;
-		out.push({
-			line,
-			linkFrom: link.from,
-			linkTo: link.to,
-			raw: text.slice(link.from, link.to),
-			side: wrap,
-			gap: link.layout.gap,
-			link,
-		});
+		// The rule of the line classes (line-classes.ts): nothing but these images and spaces.
+		const alone =
+			floats.length === links.length &&
+			!text.slice(links[links.length - 1]!.to).trim() &&
+			links.every((link, i) => !text.slice(i === 0 ? 0 : links[i - 1]!.to, link.from).trim());
+		for (const link of floats) {
+			out.push({
+				line,
+				linkFrom: link.from,
+				linkTo: link.to,
+				raw: text.slice(link.from, link.to),
+				side: link.layout.wrap as FloatSide,
+				gap: link.layout.gap,
+				link,
+				alone,
+			});
+		}
 	});
 	return out;
 }
@@ -320,6 +332,114 @@ export function estimateBox(input: EstimateInput): FloatBox | null {
 		marginTop: 0,
 		marginBottom: input.marginBottom,
 	};
+}
+
+/** One block of CodeMirror's height map below a picture never drawn, for estimateTextHeight. */
+export interface LineSample {
+	/** The line's text, or null for a block of several lines (a table, a folded section). */
+	text: string | null;
+	/** Its height in the height map: CodeMirror's guess for a line it has not drawn. */
+	mapHeight: number;
+	/** A line of images wrapped left or right only: it takes no height. */
+	floats: boolean;
+}
+
+export interface TextMetrics {
+	/** Width of a line's content box in the note column, beside no picture. */
+	lineWidth: number;
+	/** Inset of a line's content box from the column's edge, on the picture's side. */
+	lineInset: number;
+	charWidth: number;
+	lineHeight: number;
+}
+
+/** Markup Live Preview hides on lines without the cursor, and what a link shows instead of its target. */
+const HIDDEN_MARKUP = /\*\*|__|~~|==|`/g;
+const WIKILINK = /\[\[([^\]|]*)\|?([^\]]*)\]\]/g;
+const MD_LINK = /\[([^\]]*)\]\([^)]*\)/g;
+
+/** How many characters of `text` Live Preview shows, roughly: links by their text, emphasis marks left out. */
+export function visibleLength(text: string): number {
+	return text
+		.replace(WIKILINK, (_m, target: string, alias: string) => alias || target)
+		.replace(MD_LINK, '$1')
+		.replace(HIDDEN_MARKUP, '').length;
+}
+
+/** A list item, quote or footnote line: the plain lines right after it continue it (scanLines). */
+const CONTINUED = /^(?:[ \t]*(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)| {0,3}>|\[\^[^\]]+\]:)/;
+
+/** `text` without the parts `from`..`to` (offsets within it): a line without its wrapped pictures. */
+export function withoutRanges(text: string, ranges: readonly { from: number; to: number }[]): string {
+	let out = '';
+	let at = 0;
+	for (const { from, to } of [...ranges].sort((a, b) => a.from - b.from)) {
+		out += text.slice(at, Math.max(at, from));
+		at = Math.max(at, to);
+	}
+	return out + text.slice(at);
+}
+
+/**
+ * Where a picture inside a sentence, never drawn, starts below the top of its line: a float starts on
+ * the row of text its link is on, and the text before it (`before`) fills whole rows of the line.
+ */
+export function rowsBefore(before: string, metrics: TextMetrics): number {
+	const rows = Math.floor((visibleLength(before) * metrics.charWidth) / Math.max(metrics.charWidth, metrics.lineWidth));
+	return rows * metrics.lineHeight;
+}
+
+/**
+ * How tall the blocks below a picture's own line (which takes no height) are drawn, beside the
+ * picture `box` while it reaches them and at full width after it. For a picture CodeMirror has never
+ * drawn: its height map guesses those lines at full width and the image line at an embed's height,
+ * so a stand-in placed from it sits too low and moves when the picture is drawn (measured: 164px on
+ * a 788px picture). Plain paragraph lines are counted in rows of `charWidth` characters; anything else
+ * (headings, lists, tables, code, lines with links in pipes or images) keeps its height-map height.
+ * For a picture inside a sentence, the blocks start with its own line (its text, without the
+ * picture), whose rows above the picture (`narrowFrom`) run at full width.
+ * Stops once past `limit`, where the picture cannot reach any more.
+ */
+export function estimateTextHeight(blocks: Iterable<LineSample>, box: FloatBox, metrics: TextMetrics, limit = Infinity, narrowFrom = 0): number {
+	const reach = box.layoutTop + box.height + box.marginBottom;
+	const intrusion = Math.max(0, box.inset + box.width + box.margin - metrics.lineInset);
+	const narrow = Math.max(metrics.charWidth, metrics.lineWidth - intrusion);
+	const full = Math.max(metrics.charWidth, metrics.lineWidth);
+	let y = 0;
+	// After a fence (code, math, a comment) nothing is modelled any more; after a list item, quote or
+	// footnote, the plain lines up to the next blank line belong to it.
+	let modelled = true;
+	let continued = false;
+	for (const block of blocks) {
+		if (y > limit) break;
+		const text = block.text;
+		if (block.floats) continue;
+		if (text === null || !modelled) {
+			y += block.mapHeight;
+			continue;
+		}
+		if (opensOrCloses(text, false)) {
+			modelled = false;
+			y += block.mapHeight;
+			continue;
+		}
+		if (text.trim() === '') {
+			continued = false;
+			y += metrics.lineHeight;
+			continue;
+		}
+		if (CONTINUED.test(text)) continued = true;
+		if (continued || text.includes('![') || !isPlainLine(text)) {
+			y += block.mapHeight;
+			continue;
+		}
+		let rest = visibleLength(text) * metrics.charWidth;
+		do {
+			rest -= y >= narrowFrom && y < reach ? narrow : full;
+			y += metrics.lineHeight;
+		} while (rest > 0);
+	}
+	return y;
 }
 
 /** Two boxes the same to the half pixel: re-planning on smaller changes would only churn. */
