@@ -2,7 +2,8 @@
 // - when an earlier image on the same side pushes it down (same-side floats stack),
 // - when that earlier image is drawn only through its stand-in copy (its own line scrolled out of the drawn range),
 // - when the move adds a blank line before it (a heading right after a paragraph),
-// - when it is dragged down past the text it wraps (that text re-flows once it has left),
+// - when it is dragged down past the text it wraps (that text re-flows once it has left), also with the note
+//   at its top, where the view cannot scroll up to make up for it (the outline then shows the re-flowed place),
 // - at the end of a note whose last line holds only a wrapped image (that line takes no height).
 // Every gesture is real pointer input; page.evaluate only measures and sets up notes and scroll positions.
 //
@@ -43,6 +44,23 @@ const standInNote = () =>
 		...Array.from({ length: 22 }, (_, i) => [`P${i + 1} short paragraph.`, '']).flat(),
 		'![[square.png|wrap-right|200]]',
 		...Array.from({ length: 30 }, (_, i) => [`S${i + 1} filler line of ordinary text, short enough for one line.`, '']).flat(),
+	].join('\n');
+
+/** Starts with a wrapped picture and short paragraphs beside it, then `filler` more paragraphs. */
+const topNote = (filler) =>
+	[
+		'![[landscape.png|wrap-left|300]]',
+		'We set off early in the morning. The road wound through the hills and the light was still soft over the fields.',
+		'',
+		'By noon we reached the lake. The water was calm and the mountains on the far side were reflected in it.',
+		'',
+		'In the afternoon we walked along the shore. There were small boats tied up at a wooden jetty.',
+		'',
+		'We stayed until the sun went down behind the ridge. On the way back the sky turned a deep purple.',
+		'',
+		'The next day it rained, so we visited a museum in the town and read about the history of the valley.',
+		...Array.from({ length: filler }, (_, i) => ['', `F${i} ${FILLER}`]).flat(),
+		'',
 	].join('\n');
 
 /** Ends with a line holding only a wrapped image, and no newline after it. */
@@ -153,6 +171,42 @@ export default async (h) => {
 			evidence: `indicator "${r.during.label}" at y=${r.during.box} ("Rain here" at ${rain}); image drawn at y=${r.landed?.box.top} (off by ${r.error}px); "Rain here" after the drop at ${after['Rain here']}`,
 		};
 	});
+
+	// ---- The same at the top of the note: the view cannot scroll up by as much as the text re-flows ----
+	for (const [name, filler, scroll, target, side] of [
+		['down past the text it wraps, note at its top', 0, 0, 'We stayed', 'left'],
+		['down past the text it wraps, to the end of a note at its top', 0, 0, null, 'right'],
+		['down past the text it wraps, note scrolled less than the text re-flows', 30, 40, 'The next day', 'right'],
+	]) {
+		await run(name, async () => {
+			await openNote(page, d.FIXTURE, 'live');
+			await d.openText(page, h, NOTE, topNote(filler));
+			await page.evaluate((scroll) => {
+				app.workspace.activeLeaf.view.editor.cm.scrollDOM.scrollTop = scroll;
+			}, scroll);
+			await d.sleep(400);
+			await d.frames(page, 3);
+			const st0 = await d.scrollTop(page);
+			const src = await d.embedOf(page, '![[landscape.png');
+			const g = await d.geometry(page);
+			const lineCount = (await d.noteText(page)).split('\n').length;
+			const before = target ? (await d.lineTops(page, [target]))[target] : await d.lineY(page, lineCount);
+			if (!src || before === null) return { pass: false, evidence: 'picture or target not drawn' };
+			const x = side === 'left' ? g.column.left + 60 : g.column.right - 60;
+			const r = await dropAt(name, centre(src), { x, y: before + (target ? 6 : 40) }, '![[landscape.png');
+			const st1 = await d.scrollTop(page);
+			const lines = (await d.noteText(page)).split('\n');
+			const link = lines.findIndex((l) => l.startsWith('![[landscape.png'));
+			const placed = target ? lines[link + 1]?.startsWith(target) : lines.slice(link + 1).every((l) => l === '');
+			const at = r.during.box ?? r.during.bar;
+			return {
+				// The text it wrapped re-flows up, so the outline is drawn above where the target is now, and the
+				// image lands exactly there.
+				pass: r.error === 0 && at < before - 10 && placed && st1 <= st0,
+				evidence: `scrollTop ${st0}; ${target ? `"${target}"` : 'the end of the note'} at y=${before}; indicator "${r.during.label}" at y=${at}; image drawn at y=${r.landed?.box.top} (off by ${r.error}px); scrollTop after ${st1}; link on line ${link}, followed by ${JSON.stringify(lines[link + 1]?.slice(0, 20))}`,
+			};
+		});
+	}
 
 	// ---- A heading right after a paragraph: the move adds a blank line before the image ----
 	await run('heading right after a paragraph', async () => {

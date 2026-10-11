@@ -6,6 +6,7 @@
 // and the note scrolls near the editor's edges. The move is planned on the note as it was when the drag
 // started, and written as one transaction on release, only if the note has not changed since. The view is
 // then held so the image appears where the indicator was, while the text around it settles (keep-scroll.ts).
+// Undo goes back to the view at the press, where the image was.
 //
 // The flow (targets found once from the text, placed on screen through CodeMirror's height map, the
 // rAF auto-scroll loop, the commit) follows Adjustable Media (src/view/blockDrag.ts, src/view/plainDrag.ts),
@@ -14,13 +15,24 @@ import type { Text } from '@codemirror/state';
 import type { EditorView } from '@codemirror/view';
 import { Notice } from 'obsidian';
 import { EMBED, PANE } from '../../dom';
-import { CHANGED_ELSEWHERE, USER_EVENT, dispatchOwn } from '../../edit/write';
+import { CHANGED_ELSEWHERE, USER_EVENT, dispatchOwn, markView, type ViewMark } from '../../edit/write';
 import type { LocatedLink } from '../../edit/locate';
 import { relayout, type ImageLink, type Wrap } from '../../grammar';
 import { dropTargets, scanLines, type LineInfo } from '../../markdown/lines';
 import { dropZones, planMove, type MovePlan } from '../../markdown/move';
 import { keepLineAt } from '../keep-scroll';
-import { clamp, nearestTarget, pastThreshold, scrollSpeed, sideAt, type Side } from './geometry';
+import {
+	clamp,
+	landingRise,
+	landingShortfall,
+	nearestTarget,
+	pastThreshold,
+	scrollSpeed,
+	shiftAt,
+	sideAt,
+	type Shift,
+	type Side,
+} from './geometry';
 import { DragGhost, DropIndicator, type Rect } from './overlay';
 import { swallowNextClick, trackPointer, type TrackedPointer } from './pointer';
 
@@ -28,6 +40,8 @@ import { swallowNextClick, trackPointer, type TrackedPointer } from './pointer';
 export const BODY_CLASS = 'itw-dragging';
 /** On the dragged image's embed: dimmed while it is moved. */
 export const SOURCE_CLASS = 'itw-drag-source';
+/** On the dragged image's embed for a moment, to measure the note without it: not drawn (styles.css). */
+const MEASURE_CLASS = 'itw-drag-measure';
 /**
  * The copy of a wrapped picture that stand-ins.ts draws while the picture's own line is not drawn. Floated
  * like the picture; `data-from` holds the position of its link.
@@ -65,6 +79,8 @@ export class ImageDrag {
 	private readonly column: { from: number; to: number };
 	private readonly startX: number;
 	private readonly startY: number;
+	/** The view at the press, in the note as it was then: undo goes back to it (commit). */
+	private readonly viewAtPress: ViewMark;
 
 	private dragging = false;
 	private quiet = false;
@@ -78,6 +94,9 @@ export class ImageDrag {
 	private readonly plans = new Map<string, MovePlan | null>();
 	private placement: Placement | null = null;
 	private imageSize = { width: 0, height: 0 };
+	/** How far the parts of the note move once the image has left its place, and its bottom (measureReflow). */
+	private reflow: Shift[] = [];
+	private reflowEnd = 0;
 	private ghost: DragGhost | null = null;
 	private indicator: DropIndicator | null = null;
 	/** The image's own draggable attribute, put back when the press ends. */
@@ -100,6 +119,7 @@ export class ImageDrag {
 		this.column = { from: located.link.from - located.line.from, to: located.link.to - located.line.from };
 		this.startX = this.x = start.clientX;
 		this.startY = this.y = start.clientY;
+		this.viewAtPress = markView(view);
 		// The browser must not start its own image drag during this press. Cancelling its dragstart (index.ts)
 		// is not enough in a pop-out window: Obsidian relays that event to the main window before it gets to
 		// the editor, and its drag manager then sets a grabbing cursor that only a dragend would clear. An image
@@ -138,6 +158,7 @@ export class ImageDrag {
 		this.zones = dropZones(this.lines, this.infos);
 		const rect = this.img.getBoundingClientRect();
 		this.imageSize = { width: rect.width, height: rect.height };
+		this.measureReflow();
 		// Followed on the editor, not the image: the image's widget can be redrawn while the note scrolls.
 		this.pointer.capture(this.view.dom);
 		this.doc.body.addClass(BODY_CLASS);
@@ -224,11 +245,56 @@ export class ImageDrag {
 		return !pane || pane === this.view.dom.closest(PANE);
 	}
 
+	/**
+	 * Measures how far each drawn part of the note moves once the image has left its place: the text it wraps
+	 * gets the whole width and re-flows, and its own line is left empty (place() takes out the lines the move
+	 * removes). For that one measure the image is not laid out: nothing is painted in between, and CodeMirror
+	 * ignores changes inside its widgets.
+	 */
+	private measureReflow(): void {
+		const view = this.view;
+		const parts: Array<{ el: HTMLElement; pos: number; top: number }> = [];
+		for (const el of Array.from(view.contentDOM.children)) {
+			if (!el.instanceOf(HTMLElement)) continue;
+			let pos: number;
+			try {
+				pos = view.posAtDOM(el, 0);
+			} catch {
+				continue;
+			}
+			parts.push({ el, pos, top: el.getBoundingClientRect().top });
+		}
+		const last = parts[parts.length - 1];
+		const bottom = last ? last.el.getBoundingClientRect().bottom : 0;
+		const scroller = view.scrollDOM;
+		const scrollTop = scroller.scrollTop;
+		this.embed.addClass(MEASURE_CLASS);
+		try {
+			this.reflow = parts.map((p) => ({ pos: p.pos, by: p.el.getBoundingClientRect().top - p.top }));
+			this.reflowEnd = last ? last.el.getBoundingClientRect().bottom - bottom : 0;
+		} finally {
+			this.embed.removeClass(MEASURE_CLASS);
+			// Scrolled to the end, the note without the image was too short for the scroll position, which the
+			// browser then moved up.
+			if (scroller.scrollTop !== scrollTop) scroller.scrollTop = scrollTop;
+		}
+	}
+
+	/** Top of a line in document coordinates (like lineBlockAt().top); the line count stands for the end of the note. */
+	private docTop(line: number): number {
+		const doc = this.view.state.doc;
+		return line < doc.lines ? this.view.lineBlockAt(doc.line(line + 1).from).top : this.view.lineBlockAt(doc.length).bottom;
+	}
+
+	/** The same, with the image gone from its old place (measureReflow). */
+	private flowedTop(line: number): number {
+		const doc = this.view.state.doc;
+		return this.docTop(line) + (line < doc.lines ? shiftAt(this.reflow, doc.line(line + 1).from) : this.reflowEnd);
+	}
+
 	/** Top of a line on screen; the line count stands for the end of the note. */
 	private lineTop(line: number, documentTop: number): number {
-		const doc = this.view.state.doc;
-		const top = line < doc.lines ? this.view.lineBlockAt(doc.line(line + 1).from).top : this.view.lineBlockAt(doc.length).bottom;
-		return top + documentTop;
+		return this.docTop(line) + documentTop;
 	}
 
 	/** Finds the target under the pointer and shows it, or shows nothing when there is none. */
@@ -256,15 +322,20 @@ export class ImageDrag {
 		if (!plan || plan.changes.length === 0) return this.clear();
 
 		// Where the link's line will start: under the line before it, after any blank line the move adds there.
-		// The view is held there on release (commit), so lines the move takes out above do not shift it.
-		const landing = this.lineTop(plan.landing.line, documentTop) + plan.landing.blankLines * this.view.defaultLineHeight;
+		// The view is held there on release (commit): it scrolls up as far as the lines the move takes out above,
+		// and the text the image wrapped re-flowing, lift the landing. A note cannot scroll above its top, though,
+		// so near the top the image lands higher, and the indicator is drawn where it will be.
+		const { line, blankLines } = plan.landing;
+		const rise = landingRise(line, plan.removed, (l) => this.docTop(l), (l) => this.flowedTop(l));
+		const short = landingShortfall(rise, this.view.scrollDOM.scrollTop);
+		const landing = this.lineTop(line, documentTop) + blankLines * this.view.defaultLineHeight - short;
 		this.placement = { target, plan, landing: landing - documentTop };
 		const top = clamp(landing, scroller.top, scroller.bottom);
 		const bar = { left: column.left, top, width: column.width };
 		let box: Rect | null = null;
 		if (wrap !== 'none') {
 			// Where CSS will draw it: below earlier floats it has to clear, which can be lower than the line.
-			const boxTop = clamp(this.landingTop(landing, target, side ?? 'both'), scroller.top, scroller.bottom);
+			const boxTop = clamp(this.landingTop(landing + short, target, side ?? 'both') - short, scroller.top, scroller.bottom);
 			const width = Math.min(this.imageSize.width, column.width);
 			const height = Math.min(this.imageSize.height, MAX_BOX_HEIGHT, Math.max(0, scroller.bottom - boxTop));
 			const left =
@@ -380,8 +451,9 @@ export class ImageDrag {
 		}
 		const { plan, landing } = placement;
 		const offset = landing - view.scrollDOM.scrollTop;
-		// Undo brings back the view from before the drop (write.ts, keep-scroll.ts).
-		dispatchOwn(view, plan.changes, USER_EVENT.move, { undoView: true });
+		// Undo brings back the view from the press, where the image was, however far the drag scrolled (write.ts,
+		// keep-scroll.ts). The note is the one it was taken in.
+		dispatchOwn(view, plan.changes, USER_EVENT.move, { undoView: this.viewAtPress });
 		// The image appears where the indicator was, and stays there while the text it left re-flows, the
 		// picture loads and stand-ins update: its line is held at that height. On its own, CodeMirror would keep
 		// the line at the top still (or the bottom of the note, when scrolled to the end) and move the image.

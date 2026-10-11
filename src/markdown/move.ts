@@ -49,6 +49,16 @@ export interface MovePlan {
 	 * between there and the target are already allowed for, so the drop indicator can be drawn from this.
 	 */
 	landing: Landing;
+	/**
+	 * The original lines [from, to) the move takes out whole: the link's line and a surplus blank line next to
+	 * it. Empty (from === to) when the link shared its line with other text, and only the link goes.
+	 */
+	removed: LineRange;
+}
+
+export interface LineRange {
+	from: number;
+	to: number;
 }
 
 export interface Landing {
@@ -244,7 +254,8 @@ export function planMove(
 		line: insertion.at > 0 ? beforeRemoval(insertion.at - 1, removal) + 1 : 0,
 		blankLines: insertion.head,
 	};
-	const plan = (changes: TextChange[]): MovePlan => ({ changes, lines: result, linkLine, landing });
+	const removed = { from: removal.from, to: removal.replacement.length === 0 ? removal.to : removal.from };
+	const plan = (changes: TextChange[], gone: LineRange = removed): MovePlan => ({ changes, lines: result, linkLine, landing, removed: gone });
 
 	if (result.length === lines.length && result.every((l, i) => l === lines[i])) return plan([]);
 
@@ -259,7 +270,7 @@ export function planMove(
 	const relinked = source.slice(0, req.from) + req.link + source.slice(req.to);
 	if (result.length === lines.length && result.every((l, i) => (i === req.line ? l === relinked : l === lines[i]))) {
 		const from = starts[req.line]! + req.from;
-		return plan([{ from, to: starts[req.line]! + req.to, insert: req.link }]);
+		return plan([{ from, to: starts[req.line]! + req.to, insert: req.link }], { from: req.line, to: req.line });
 	}
 
 	const changes: TextChange[] = [];

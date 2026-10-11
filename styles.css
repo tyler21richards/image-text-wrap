@@ -428,6 +428,14 @@ body.itw-dragging > .tooltip {
 	opacity: 0.35;
 }
 
+/*
+ * For one measure as the drag starts, the note is laid out without the image (never painted): how far the
+ * text it wraps moves up once it has gone. As specific as Obsidian's own rule for embeds on a line of their own.
+ */
+.markdown-source-view .cm-content .image-embed.itw-drag-measure {
+	display: none;
+}
+
 /* A translucent copy of the image beside the pointer. Never takes the pointer. */
 .itw-drag-ghost {
 	position: fixed;
