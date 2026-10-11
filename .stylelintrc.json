@@ -1,0 +1,13 @@
+{
+	"plugins": ["stylelint-no-unsupported-browser-features"],
+	"rules": {
+		"plugin/no-unsupported-browser-features": [
+			true,
+			{
+				"browsers": ["Chrome 132"],
+				"ignore": ["css-clip-path", "css3-attr"],
+				"severity": "warning"
+			}
+		]
+	}
+}

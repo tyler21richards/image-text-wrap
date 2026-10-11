@@ -9,7 +9,8 @@
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
 		"test": "node --import tsx --test \"tests/unit/**/*.test.ts\"",
 		"lint": "eslint .",
-		"version": "node version-bump.mjs && git add manifest.json versions.json"
+		"version": "node version-bump.mjs && git add manifest.json versions.json",
+		"lint:css": "stylelint styles.css"
 	},
 	"keywords": [
 		"obsidian",
@@ -34,6 +35,8 @@
 		"jiti": "^2.7.0",
 		"obsidian": "^1.14.4",
 		"playwright-core": "^1.64.0",
+		"stylelint": "^17.16.0",
+		"stylelint-no-unsupported-browser-features": "^8.1.2",
 		"tsx": "^4.23.15",
 		"typescript": "^5.9.3",
 		"typescript-eslint": "^8.71.1"

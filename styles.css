@@ -209,14 +209,18 @@ p > img:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="
 
 /* ---------- Print and PDF ---------- */
 
+/*
+ * The page-break-* names, which Chromium treats as aliases of break-inside and break-after: Obsidian's plugin
+ * review flags the break-* properties as only partly supported (they belong to the multi-column feature).
+ */
 @media print {
 	.image-embed:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="|wrap-left"], [alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt$="|wrap-right"], [alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt$="|wrap-block"]),
 	p > img:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="|wrap-left"], [alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt$="|wrap-right"], [alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt$="|wrap-block"]),
 	.itw-print-float {
-		break-inside: avoid;
+		page-break-inside: avoid;
 	}
 	.itw-print-keep-with-next {
-		break-after: avoid;
+		page-break-after: avoid;
 	}
 }
 
