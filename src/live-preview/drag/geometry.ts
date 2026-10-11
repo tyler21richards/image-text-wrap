@@ -10,15 +10,25 @@ export const SCROLL_EDGE = 48;
 /** Fastest auto-scroll, in pixels per animation frame. */
 export const SCROLL_SPEED = 24;
 
-/** Touch and pen: a finger that rests this long on an image picks it up, in milliseconds. */
+/** A finger (see longPressFor): resting this long on an image picks it up, in milliseconds. */
 export const LONG_PRESS_MS = 500;
 /**
- * Touch and pen: how far a resting finger may wander, in pixels. Further before the image is picked up, and the
- * press is a swipe that scrolls the note; further after it, and the image is dragged.
+ * A finger: how far it may wander while it rests, in pixels. Further before the image is picked up, and the press
+ * is a swipe that scrolls the note; further after it, and the image is dragged.
  */
 export const LONG_PRESS_SLOP = 8;
-/** Touch and pen: the gap between the finger and the copy of the image drawn above it. */
+/** A finger: the gap between it and the copy of the image drawn above it. */
 export const FINGER_GAP = 32;
+
+/**
+ * Whether a press is a finger's, which picks the image up with a long press, rather than one that drags past
+ * DRAG_THRESHOLD as the mouse does. A touch always is. A pen is on a phone or tablet (an Apple Pencil, an S Pen),
+ * where it scrolls the note as a finger does; on a desktop a pen (a graphics tablet, a pen on a touch screen)
+ * drags as the mouse does, as it always has.
+ */
+export function longPressFor(pointerType: string, mobile: boolean): boolean {
+	return pointerType === 'touch' || (pointerType === 'pen' && mobile);
+}
 
 export type Side = 'left' | 'right';
 

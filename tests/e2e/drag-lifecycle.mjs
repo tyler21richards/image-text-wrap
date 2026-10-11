@@ -2,7 +2,8 @@
 //
 //   node scripts/obsidian.mjs run tests/e2e/drag-lifecycle.mjs <screenshot dir>
 //
-// Gestures use real input (page.mouse, page.keyboard, and one raw CDP mouse move for a missed release).
+// Gestures use real input (page.mouse, page.keyboard, one raw CDP mouse move for a missed release, and raw CDP
+// mouse input with pointerType "pen" for a pen).
 // page.evaluate measures, flips the setting, unloads the plugin, or edits the note "elsewhere".
 import { mkdirSync } from 'node:fs';
 import * as d from './drag-lib.mjs';
@@ -190,6 +191,75 @@ export default async ({ page, setWindowSize, openNote, watchErrors, reloadPlugin
 		await page.keyboard.press('Escape');
 		return { pass: at > 0 && selected, evidence: `moved to line ${at}; clicking it afterwards selects it=${selected}` };
 	});
+
+	// A pen (a graphics tablet, a Surface pen) on a desktop drags as the mouse does: no long press, the drag starts
+	// past 5 px, and the browser's own image drag never starts (Obsidian's would drop a second copy of the link into
+	// the text where the pen is lifted). Real CDP mouse input with pointerType "pen"; a native drag, should one start,
+	// is caught (Input.setInterceptDrags) so no system drag begins, and finished in the page where the pen is lifted.
+	for (const [name, steps] of [
+		['a pen drags as the mouse does', Array(12).fill(1)],
+		['a pen that starts slowly drags as the mouse does', [1, 3, 6, 10, 16, 24, 32, 40, 44, 44, 40, 40]],
+	]) {
+		await run(name, async () => {
+			await reset();
+			await d.scrollToLine(page, LANDSCAPE - 1, 40);
+			const g = await d.geometry(page, LANDSCAPE);
+			const from = center(g);
+			const to = { x: g.column.right - 60, y: (await d.lineY(page, RAIN)) + 4 };
+			const session = await page.context().newCDPSession(page);
+			let native = null;
+			session.on('Input.dragIntercepted', (e) => (native = e.data));
+			await session.send('Input.setInterceptDrags', { enabled: true });
+			const pen = (type, x, y, buttons) =>
+				session.send('Input.dispatchMouseEvent', {
+					type,
+					x: Math.round(x),
+					y: Math.round(y),
+					button: type === 'mouseMoved' && !buttons ? 'none' : 'left',
+					buttons,
+					clickCount: type === 'mouseMoved' ? 0 : 1,
+					pointerType: 'pen',
+				});
+			let during;
+			let release;
+			try {
+				await pen('mouseMoved', from.x, from.y, 0);
+				await d.sleep(50);
+				await pen('mousePressed', from.x, from.y, 1);
+				const total = steps.reduce((a, b) => a + b, 0);
+				let done = 0;
+				for (const step of steps) {
+					done += step;
+					await pen('mouseMoved', from.x + ((to.x - from.x) * done) / total, from.y + ((to.y - from.y) * done) / total, 1);
+					await d.sleep(16);
+				}
+				await d.sleep(150);
+				await d.frames(page, 2);
+				during = await d.dragState(page);
+				if (native) {
+					for (const type of ['dragEnter', 'dragOver', 'drop']) await session.send('Input.dispatchDragEvent', { type, x: Math.round(to.x), y: Math.round(to.y), data: native });
+					release = 'the browser started its own image drag, dropped where the pen was lifted';
+				} else {
+					await pen('mouseReleased', to.x, to.y, 0);
+					release = 'released';
+				}
+				await d.sleep(400);
+			} finally {
+				await session.send('Input.setInterceptDrags', { enabled: false }).catch(() => {});
+				await session.detach().catch(() => {});
+			}
+			const text = await d.noteText(page);
+			const lines = text.split('\n');
+			const links = (s) => (s.match(/!\[\[landscape\.png[^\]]*\]\]/g) ?? []).length;
+			const at = lines.indexOf('![[landscape.png|wrap-right|300]]');
+			const landed = at > 0 && lines[at + 1]?.startsWith('Rain here') && !lines.includes('![[landscape.png|wrap-left|300]]');
+			const grabbing = await page.evaluate(() => document.body.classList.contains('is-grabbing'));
+			return {
+				pass: !native && !!during.ghost && !!during.bar && during.label?.text === 'Wrap right' && landed && links(text) === links(original) && !grabbing,
+				evidence: `first moves ${JSON.stringify(steps.slice(0, 4))}... of ${steps.reduce((a, b) => a + b, 0)} parts; during: ghost=${!!during.ghost}, indicator=${!!during.bar} "${during.label?.text ?? ''}"; ${release}; landscape links ${links(original)} -> ${links(text)}; moved to line ${at}, before "${lines[at + 1]?.slice(0, 20)}" (${landed}); changed lines ${JSON.stringify(d.changedLines(original, text).map(([i, , b]) => [i, b?.slice(0, 40)]))}; body.is-grabbing=${grabbing}`,
+			};
+		});
+	}
 
 	await run('the same image twice: only the dragged copy moves', async () => {
 		await reset();

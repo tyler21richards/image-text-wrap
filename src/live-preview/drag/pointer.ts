@@ -5,13 +5,18 @@
 // destroyed, plugin unloaded); and the pointer is captured only when the caller asks (once the press has
 // become a drag), because capturing at the press would retarget the click that selects the image.
 //
-// A finger (touch or pen) is followed the same way, with what a long press needs on top (TouchHold).
+// A finger (a touch, or a pen on a phone or tablet) is followed the same way, with what a long press needs on top
+// (TouchHold).
 
 export interface PointerHandlers {
 	onMove(event: PointerEvent): void;
 	onEnd(event: PointerEvent): void;
-	/** The gesture was interrupted (Escape, pointercancel, lost capture, a missed release, a native drag). */
-	onCancel(): void;
+	/**
+	 * The gesture was interrupted (Escape, pointercancel, lost capture, a missed release, a native drag, and for a
+	 * finger a second finger or the app going to the background). `gone`: the pointer itself was cancelled
+	 * (pointercancel), so no release and no click will follow.
+	 */
+	onCancel(gone: boolean): void;
 }
 
 /**
@@ -45,7 +50,7 @@ export function trackPointer(doc: Document, start: PointerEvent, handlers: Point
 	let finished = false;
 	let holder: HTMLElement | null = null;
 
-	const finish = (ended: PointerEvent | null): void => {
+	const finish = (ended: PointerEvent | null, gone = false): void => {
 		if (finished) return;
 		finished = true;
 		controller.abort();
@@ -55,7 +60,7 @@ export function trackPointer(doc: Document, start: PointerEvent, handlers: Point
 			/* the pointer is gone already */
 		}
 		if (ended) handlers.onEnd(ended);
-		else handlers.onCancel();
+		else handlers.onCancel(gone);
 	};
 
 	const onMove = (event: PointerEvent): void => {
@@ -71,6 +76,10 @@ export function trackPointer(doc: Document, start: PointerEvent, handlers: Point
 		if (event.pointerId === start.pointerId) finish(event);
 	};
 	const onCancel = (event: PointerEvent): void => {
+		if (event.pointerId === start.pointerId) finish(null, true);
+	};
+	// Losing the capture leaves the pointer down (the editor was taken out of the page): its release still comes.
+	const onLost = (event: PointerEvent): void => {
 		if (event.pointerId === start.pointerId) finish(null);
 	};
 	const onKey = (event: KeyboardEvent): void => {
@@ -103,7 +112,7 @@ export function trackPointer(doc: Document, start: PointerEvent, handlers: Point
 				el.addEventListener(
 					'lostpointercapture',
 					(event) => {
-						if (event.target === el) onCancel(event);
+						if (event.target === el) onLost(event);
 					},
 					{ signal },
 				);
@@ -187,7 +196,8 @@ const FINGER_CLICK_WAIT = 800;
 /**
  * The browser still sends a click where a drag ends, and Obsidian would select (or open) the image under
  * the pointer for it, so the next click is dropped. It waits for the release if the button is still down
- * (a drag cancelled with Escape), and gives up at the next press so a later real click is never eaten.
+ * (a drag cancelled with Escape), and gives up at the next press so a later real click is never eaten; and at a
+ * pointercancel (the system took a touch over after the drag was cancelled), which no release and no click follow.
  *
  * After a finger (`touch`), the click comes a little later, once the browser has seen the touch end, so it is
  * waited for a while; a menu asked for as the finger lifts (some systems ask then) is kept shut too; and a click
@@ -212,6 +222,7 @@ export function swallowNextClick(doc: Document, released: boolean, touch = false
 	);
 	if (touch) doc.addEventListener('contextmenu', keepMenuShut, { capture: true, signal });
 	doc.addEventListener('pointerdown', done, { capture: true, signal });
+	doc.addEventListener('pointercancel', done, { capture: true, signal });
 	// The click comes in the same task as the release; anything later is a new click.
 	const afterRelease = () => win.setTimeout(done, touch ? FINGER_CLICK_WAIT : 0);
 	if (released) afterRelease();

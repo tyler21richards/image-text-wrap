@@ -48,7 +48,8 @@ class DragHandler implements PluginValue {
 		// With the setting off nothing is followed, so Obsidian's own image drag works as before.
 		if (this.drag || !this.plugin.settings.dragToMove) return;
 		if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
-		// A finger (touch or pen) picks the image up with a long press (gesture.ts); a second finger is not followed.
+		// A finger (a touch, or a pen on a phone or tablet) picks the image up with a long press (gesture.ts); a second
+		// finger is not followed.
 		if (!event.isPrimary) return;
 		if (!view.state.field(editorLivePreviewField, false)) return;
 		if (view.state.readOnly || !view.state.facet(EditorView.editable)) return;

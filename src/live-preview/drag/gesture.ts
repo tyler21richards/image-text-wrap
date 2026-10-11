@@ -8,11 +8,12 @@
 // then held so the image appears where the indicator was, while the text around it settles (keep-scroll.ts).
 // Undo goes back to the view at the press, where the image was.
 //
-// A finger (touch or pen) has to rest on the image first: a tap still selects it and a swipe still scrolls the
-// note. After half a second without moving more than 8 px the image is picked up (it is outlined, a ring spreads
-// from the finger, and the device gives a short buzz where it can); from then on the browser does not scroll,
-// and moving the finger drags the image exactly as the mouse does, with the ghost above the finger. Lifting the
-// finger without moving puts the image down as it was, selected.
+// A finger (a touch, or a pen on a phone or tablet) has to rest on the image first: a tap still selects it and a
+// swipe still scrolls the note. After half a second without moving more than 8 px the image is picked up (it is
+// outlined, a ring spreads from the finger, and the device gives a short buzz where it can); from then on the
+// browser does not scroll, and moving the finger drags the image exactly as the mouse does, with the ghost above
+// the finger. Lifting the finger without moving puts the image down as it was, selected. On a desktop a pen drags
+// as the mouse does.
 //
 // The flow (targets found once from the text, placed on screen through CodeMirror's height map, the
 // rAF auto-scroll loop, the commit) follows Adjustable Media (src/view/blockDrag.ts, src/view/plainDrag.ts),
@@ -32,6 +33,7 @@ import {
 	landingRise,
 	landingShortfall,
 	LONG_PRESS_MS,
+	longPressFor,
 	nearestTarget,
 	pastSlop,
 	pastThreshold,
@@ -97,7 +99,7 @@ export class ImageDrag {
 	private readonly startY: number;
 	/** The view at the press, in the note as it was then: undo goes back to it (commit). */
 	private readonly viewAtPress: ViewMark;
-	/** A finger (touch or pen) rather than a mouse: it picks the image up with a long press. */
+	/** A finger (a touch, or a pen on a phone or tablet) rather than a mouse: it picks the image up with a long press. */
 	private readonly finger: boolean;
 	/** Whether the editor had the keyboard focus at the press. */
 	private readonly hadFocus: boolean;
@@ -145,7 +147,7 @@ export class ImageDrag {
 		this.startX = this.x = start.clientX;
 		this.startY = this.y = start.clientY;
 		this.viewAtPress = markView(view);
-		this.finger = start.pointerType !== 'mouse';
+		this.finger = longPressFor(start.pointerType, Platform.isMobile);
 		this.hadFocus = view.hasFocus;
 		// The browser must not start its own image drag during this press. Cancelling its dragstart (index.ts)
 		// is not enough in a pop-out window: Obsidian relays that event to the main window before it gets to
@@ -161,7 +163,7 @@ export class ImageDrag {
 			{
 				onMove: (event) => this.onMove(event),
 				onEnd: (event) => this.onEnd(event),
-				onCancel: () => this.onCancel(),
+				onCancel: (gone) => this.onCancel(gone),
 			},
 			touch,
 		);
@@ -261,13 +263,20 @@ export class ImageDrag {
 		if (placement) this.commit(placement);
 	}
 
-	private onCancel(): void {
+	/**
+	 * The press ended without a drop. While the pointer is still down (Escape, the app hidden) the click its release
+	 * brings must not select or open the image, so that click is dropped. A pointer that is `gone` (pointercancel: the
+	 * system took the touch over) sends no release and no click, and nothing waits for one: it would eat the next
+	 * click, one made with the keyboard too.
+	 */
+	private onCancel(gone: boolean): void {
+		const guard = !this.quiet && !gone;
 		if (this.dragging) {
-			if (!this.quiet) swallowNextClick(this.doc, false, this.finger);
+			if (guard) swallowNextClick(this.doc, false, this.finger);
 			this.cleanup();
 		} else {
 			// A finger that picked the image up may still be down (Escape): lifting it must not select or open the image.
-			if (this.lifted && !this.quiet) swallowNextClick(this.doc, false, true);
+			if (this.lifted && guard) swallowNextClick(this.doc, false, true);
 			this.done();
 		}
 	}
