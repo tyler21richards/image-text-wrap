@@ -116,21 +116,18 @@ Image Text Wrap makes no network requests and collects no data. Everything it do
 
 ## Installing
 
-Image Text Wrap is not yet in Obsidian's community plugin directory, so install it with BRAT or by hand. It needs Obsidian 1.13.1 or later, on desktop, phone or tablet.
+Image Text Wrap is in Obsidian's [community plugin directory](https://community.obsidian.md/plugins/image-text-wrap). It needs Obsidian 1.13.1 or later, on desktop, phone or tablet.
 
-If you have never used community plugins in this vault, first open **Settings → Community plugins** and choose **Turn on community plugins** (called **Exit Restricted mode** in recent versions of Obsidian). Until you do, that page has no Browse button and no list of installed plugins.
+1. In Obsidian, open **Settings → Community plugins**.
+2. If you have never used community plugins in this vault, choose **Turn on community plugins** first (called **Exit Restricted mode** in recent versions of Obsidian). Until you do, that page has no **Browse** button.
+3. Choose **Browse**, search for **Image Text Wrap**, and choose **Install**, then **Enable**.
 
-**With BRAT (easiest, and it keeps the plugin up to date):**
+Obsidian offers new versions as updates on the same page.
 
-1. In Obsidian, install and turn on the community plugin **BRAT** (Settings → Community plugins → Browse).
-2. Open BRAT's settings, choose **Add beta plugin**, and enter `tyler21richards/image-text-wrap`.
-3. Turn on **Image Text Wrap** in Settings → Community plugins.
+**Other ways to install** (for example, to try a version before it reaches the directory):
 
-**By hand:**
-
-1. Download `main.js`, `manifest.json` and `styles.css` from the [latest release](https://github.com/tyler21richards/image-text-wrap/releases).
-2. Put them in a new folder, `<your vault>/.obsidian/plugins/image-text-wrap/`.
-3. Restart Obsidian, then turn on **Image Text Wrap** in Settings → Community plugins.
+- With BRAT: install and turn on the community plugin **BRAT**, open its settings, choose **Add beta plugin**, and enter `tyler21richards/image-text-wrap`. Then turn on **Image Text Wrap** in Settings → Community plugins.
+- By hand: download `main.js`, `manifest.json` and `styles.css` from the [latest release](https://github.com/tyler21richards/image-text-wrap/releases), put them in a new folder, `<your vault>/.obsidian/plugins/image-text-wrap/`, restart Obsidian, and turn on **Image Text Wrap** in Settings → Community plugins.
 
 To try it out, copy `test-vault/Fixture.md`, `test-vault/Plain images.md` and the `test-vault/images` folder from this repository into a vault.
 
@@ -140,7 +137,8 @@ To try it out, copy `test-vault/Fixture.md`, `test-vault/Plain images.md` and th
 npm install
 npm run build      # type-check and bundle main.js
 npm test           # unit tests (node:test)
-npm run lint
+npm run lint       # ESLint, with Obsidian's plugin rules
+npm run lint:css   # browser support of styles.css, as Obsidian's plugin review checks it
 ```
 
 `tests/e2e/` holds a harness that drives a real Obsidian over the Chrome DevTools Protocol, with real pointer events. Set `OBSIDIAN_APP` to an Obsidian.app and run `node scripts/obsidian.mjs launch --fresh`; see the top of `scripts/obsidian.mjs` for the commands. `test-vault/Fixture.md` covers every case in the acceptance tests.
