@@ -2,6 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
 	findImageLinks,
+	isExternalTarget,
+	isLayoutToken,
+	layoutFromSegments,
 	parseImageLinkAt,
 	relayout,
 	withLayout,
@@ -242,4 +245,36 @@ test('segments with spaces that are not tokens stay where they are', () => {
 	assert.equal(apply('![[x.png| wrap-left|60]]', L('right')), '![[x.png|wrap-right|60]]');
 	assert.equal(apply('![[x.png|cap|wrap-left ]]', L('none')), '![[x.png|cap]]');
 	assert.equal(apply('![ wrap-block|60](x.png)', L('left', 8)), '![wrap-left|gap-8|60](x.png)');
+});
+
+// Every name an object inherits ("constructor", "toString", "__proto__", "hasOwnProperty" ...).
+const PROTOTYPE_NAMES = Object.getOwnPropertyNames(Object.prototype);
+
+test('a caption named like an inherited object member is caption text, not a token', () => {
+	assert.ok(PROTOTYPE_NAMES.includes('__proto__') && PROTOTYPE_NAMES.includes('constructor'));
+	for (const name of PROTOTYPE_NAMES) {
+		assert.equal(isLayoutToken(name), false, name);
+		assert.deepEqual(layoutFromSegments([name]), L('none'), name);
+		assert.deepEqual(layoutFromSegments(['wrap-right', name, 'gap-8']), L('right', 8), name);
+		const wiki = `![[square.png|${name}|200]]`;
+		assert.deepEqual(parseImageLinkAt(wiki, 0)!.layout, L('none'), name);
+		assert.equal(apply(wiki, L('left')), `![[square.png|${name}|wrap-left|200]]`, name);
+		assert.equal(apply(wiki, L('left', 24)), `![[square.png|${name}|wrap-left|gap-24|200]]`, name);
+		assert.equal(apply(wiki, L('none')), wiki, name);
+		assert.equal(apply(`![[square.png|${name}|wrap-right|200]]`, L('none')), wiki, name);
+		const md = `![${name}|200](square.png)`;
+		assert.deepEqual(parseImageLinkAt(md, 0)!.layout, L('none'), name);
+		assert.equal(apply(md, L('right')), `![${name}|wrap-right|200](square.png)`, name);
+		// An alt text as Reading view has it.
+		assert.deepEqual(layoutFromSegments(`${name}|wrap-left`.split('|')), L('left'), name);
+	}
+});
+
+test('isExternalTarget: a URL with a scheme, not a file in the vault', () => {
+	for (const t of ['https://example.com/a.png', 'http://127.0.0.1:8811/pic.png', 'data:image/png;base64,AAAA', 'file:///Users/a.png', ' HTTPS://x.org/a.png']) {
+		assert.equal(isExternalTarget(t), true, t);
+	}
+	for (const t of ['photo.png', 'images/a b.png', 'C:/pictures/a.png', 'my%20photo.png']) {
+		assert.equal(isExternalTarget(t), false, t);
+	}
 });

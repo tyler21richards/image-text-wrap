@@ -9,9 +9,14 @@
 //    it changes nothing; a real image on a line with inline code still gets it.
 // 3. Tokens with spaces: for each image, selected with a real click, the toolbar's pressed button
 //    matches how the picture is drawn (floated left, right, or in line).
-// 4. Cost of the line classes per real keystroke in a ~3000-line note (the field's update replayed).
+// 4. Live Preview, Reading view and the toolbar agree on where a picture wraps: on a line continuing a
+//    list item or quote, in a footnote (in line, toolbar not offered), on a line indented by one to
+//    three spaces, two on one line, a data-URI image in a sentence (wrapped, the text beside it where
+//    Reading view has it, the picture at the column edge, its box no taller than it), and a caption
+//    named "constructor" (in line; "Wrap text left" keeps the caption). Real clicks throughout.
+// 5. Cost of the line classes per real keystroke in a ~3000-line note (the field's update replayed).
 // Scratch notes are written to the instance vault only.
-import { clickText, closeLightbox, imageRect, pressed, probe, sleep, sourceNote, state } from './toolbar-helpers.mjs';
+import { clickButton, clickText, closeLightbox, imageRect, pressed, probe, showImage, sleep, sourceNote, state } from './toolbar-helpers.mjs';
 
 const CODE_NOTE = 'ITW line classes.md';
 const CODE = [
@@ -71,6 +76,88 @@ const SPACED = [
 ];
 
 const WRAP_LABEL = { left: 'Wrap text left', right: 'Wrap text right', none: 'In line with text' };
+
+// Part 4: each case's picture is found by its link (Live Preview) and its width (Reading view); `word`
+// starts the text beside it, `want` is how both views draw it, `pressed` the toolbar button shown for it
+// (none: the toolbar does not act on it).
+const AGREE_NOTE = 'ITW where pictures wrap.md';
+const DATA = sourceNote('Fixture.md').match(/data:image\/png;base64,[A-Za-z0-9+/=]+/)[0];
+const AGREE_CASES = [
+	{ name: 'line continuing a list item', lines: ['- item', '![[square.png|wrap-left|101]]', `LAZYL ${P}`], want: 'none' },
+	{ name: 'line continuing a quote', lines: ['> quote', '![[square.png|wrap-left|102]]', `LAZYQ ${P}`], want: 'none' },
+	{ name: 'footnote', lines: ['See the note[^1].', '', '[^1]: ![[square.png|wrap-left|103]] Footnote words.'], want: 'none' },
+	{ name: 'indented one space', lines: [' ![[square.png|wrap-left|104]]', `INDENTL ${P} ${P}`], want: 'left', pressed: 'Wrap text left' },
+	{ name: 'indented three spaces', lines: ['   ![[square.png|wrap-right|105]]', `INDENTR ${P} ${P}`], want: 'right', pressed: 'Wrap text right' },
+	{ name: 'two on one line', lines: ['![[square.png|wrap-left|106]] ![[landscape.png|wrap-right|120]]', `TWO ${P} ${P}`], want: 'left', pressed: 'Wrap text left' },
+	{ name: 'data-URI image in a sentence', lines: [`DATAS start ![wrap-right|107](${DATA}) ${P} ${P}`], want: 'right', pressed: 'Wrap text right' },
+	{ name: 'caption "constructor"', lines: ['![[square.png|constructor|108]]', P], want: 'none', pressed: 'In line with text', click: 'Wrap text left', caption: '|constructor|' },
+].map((c) => ({ ...c, link: c.lines.join('\n').match(/!\[[^\n]*?\|(\d+)(?:\]\]|\]\([^)]*\))/)[0], width: c.lines.join('\n').match(/\|(\d+)(?:\]\]|\]\()/)[1], word: c.lines.join(' ').match(/\b[A-Z]{3,}\b/)?.[0] }));
+const AGREE = ['# Where pictures wrap', '', ...AGREE_CASES.flatMap((c) => [`## ${c.name}`, '', ...c.lines, '', P, '']), 'End.'].join('\n');
+
+/** In the page: the Live Preview picture whose link starts at `pos`, and the text `word` beside it. */
+function lpDrawn({ pos, word }) {
+	const v = app.workspace.activeLeaf.view.editor.cm;
+	const embed = [...v.contentDOM.querySelectorAll('.image-embed')].find((e) => {
+		try {
+			return v.posAtDOM(e) === pos;
+		} catch {
+			return false;
+		}
+	});
+	if (!embed) return null;
+	const pic = (embed.querySelector('img') ?? embed).getBoundingClientRect();
+	const line = embed.closest('.cm-line');
+	const float = getComputedStyle(embed).float;
+	const content = [...v.contentDOM.querySelectorAll(':scope > .cm-line')].find((l) => !l.querySelector('.image-embed') && l.textContent.length > 40) ?? line;
+	const box = content.getBoundingClientRect();
+	const cs = getComputedStyle(content);
+	const edge = float === 'right' ? box.right - parseFloat(cs.paddingRight) - pic.right : pic.left - box.left - parseFloat(cs.paddingLeft);
+	let textTop = null;
+	if (word) {
+		const walk = document.createTreeWalker(v.contentDOM, NodeFilter.SHOW_TEXT);
+		while (walk.nextNode()) {
+			const i = walk.currentNode.textContent.indexOf(word);
+			if (i < 0) continue;
+			const r = document.createRange();
+			r.setStart(walk.currentNode, i);
+			r.setEnd(walk.currentNode, i + 1);
+			textTop = Math.round(r.getBoundingClientRect().top - pic.top);
+			break;
+		}
+	}
+	return { float, cls: line.className.replace(/cm-line|ͼ\w+/g, '').trim(), lineHeight: Math.round(line.getBoundingClientRect().height), edge: Math.round(edge), extra: embed.getBoundingClientRect().height - pic.height, textTop };
+}
+
+/** In the page: the Reading view picture `width` wide (scrolling until it is drawn), and the text `word` beside it. */
+async function rvDrawn({ width, word }) {
+	const root = app.workspace.activeLeaf.view.previewMode.containerEl;
+	const scroller = root.querySelector('.markdown-preview-view');
+	for (let y = 0; y < 8000; y += 300) {
+		const el = root.querySelector(`.image-embed[width="${width}"]`) ?? root.querySelector(`p > img[width="${width}"]`);
+		if (el && el.getBoundingClientRect().height > 0) {
+			el.scrollIntoView({ block: 'center' });
+			await new Promise((r) => setTimeout(r, 200));
+			const pic = (el.querySelector('img') ?? el).getBoundingClientRect();
+			let textTop = null;
+			if (word) {
+				const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+				while (walk.nextNode()) {
+					const i = walk.currentNode.textContent.indexOf(word);
+					if (i < 0) continue;
+					const r = document.createRange();
+					r.setStart(walk.currentNode, i);
+					r.setEnd(walk.currentNode, i + 1);
+					textTop = Math.round(r.getBoundingClientRect().top - pic.top);
+					break;
+				}
+			}
+			return { float: getComputedStyle(el).float, textTop };
+		}
+		scroller.scrollTop = y;
+		await new Promise((r) => setTimeout(r, 150));
+	}
+	return null;
+}
 
 export default probe(async (h, check) => {
 	const { page } = h;
@@ -222,7 +309,74 @@ export default probe(async (h, check) => {
 	await closeLightbox(page);
 	await clickText(page).catch(() => {});
 
-	// ---- 4. Line classes per real keystroke in a ~3000-line note ----
+	// ---- 4. Live Preview, Reading view and the toolbar agree on where a picture wraps ----
+	await h.setNote(page, AGREE_NOTE, AGREE);
+	await h.openNote(page, AGREE_NOTE, 'live');
+	await sleep(600);
+	const lp = {};
+	for (const c of AGREE_CASES) {
+		await closeLightbox(page);
+		await cm(() => {
+			const v = app.workspace.activeLeaf.view.editor.cm;
+			v.dispatch({ selection: { anchor: v.state.doc.length }, effects: v.constructor.scrollIntoView(v.state.doc.length, { y: 'center' }) });
+		});
+		await sleep(250);
+		const end = await cm(() => {
+			const v = app.workspace.activeLeaf.view.editor.cm;
+			const at = v.coordsAtPos(v.state.doc.length);
+			return { x: at.left + 2, y: (at.top + at.bottom) / 2 };
+		});
+		await page.mouse.click(end.x, end.y);
+		await sleep(250);
+		const r = await showImage(page, c.link);
+		const drawn = await cm(lpDrawn, { pos: r.pos, word: c.word });
+		if (!r.found || !drawn) {
+			check(`${c.name}: picture drawn in Live Preview`, false, r);
+			continue;
+		}
+		// Low on the left of the picture: clear of Obsidian's zoom button (top right) and resize corner.
+		await page.mouse.click(r.left + (r.right - r.left) * 0.3, r.top + (r.bottom - r.top) * 0.7);
+		await sleep(400);
+		const s = await state(page);
+		lp[c.name] = { ...drawn, toolbar: s.visible ? pressed(s) : null, spacing: s.buttons.find((b) => /^Spacing/.test(b.label ?? ''))?.disabled ? 'off' : 'on' };
+		if (c.click) {
+			await clickButton(page, c.click);
+			await sleep(300);
+			lp[c.name].after = (await cm(() => app.workspace.activeLeaf.view.editor.cm.state.doc.toString())).split('\n').find((l) => l.includes(c.caption));
+			await cm((text) => {
+				const v = app.workspace.activeLeaf.view.editor.cm;
+				v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: text } });
+			}, AGREE);
+			await sleep(300);
+		}
+	}
+	await closeLightbox(page);
+	await cm(() => app.workspace.activeLeaf.view.save());
+	await h.openNote(page, AGREE_NOTE, 'reading');
+	await sleep(1000);
+	const rv = {};
+	for (const c of AGREE_CASES) rv[c.name] = await cm(rvDrawn, { width: c.width, word: c.word });
+	await h.openNote(page, AGREE_NOTE, 'live');
+	for (const c of AGREE_CASES) {
+		const l = lp[c.name];
+		const r = rv[c.name];
+		if (!l) continue;
+		const ev = { lp: l, rv: r };
+		check(`${c.name}: drawn ${c.want === 'none' ? 'in line' : `wrapped ${c.want}`} in both views`, l.float === c.want && r?.float === c.want, ev);
+		check(
+			`${c.name}: ${c.pressed ? `the toolbar shows "${c.pressed}" pressed` : 'the toolbar does not act on it'}`,
+			c.pressed ? JSON.stringify(l.toolbar) === JSON.stringify([c.pressed]) : l.toolbar === null,
+			ev,
+		);
+		if (c.want === 'none') continue;
+		check(`${c.name}: the text beside it starts where it does in Reading view (within 4 px)`, !!r && Math.abs(l.textTop - r.textTop) <= 4, ev);
+		check(`${c.name}: the picture sits at the edge of the note column`, Math.abs(l.edge) <= 1, ev);
+		check(`${c.name}: its box is no taller than the picture`, Math.abs(l.extra) <= 0.5, ev);
+	}
+	const caption = lp['caption "constructor"'];
+	check('a caption named "constructor": spacing is off, and "Wrap text left" keeps the caption', caption?.spacing === 'off' && caption?.after === '![[square.png|constructor|wrap-left|108]]', caption);
+
+	// ---- 5. Line classes per real keystroke in a ~3000-line note ----
 	const KEYS_NOTE = 'ITW line classes keys.md';
 	await h.setNote(page, KEYS_NOTE, Array.from({ length: 25 }, () => sourceNote('Fixture.md')).join('\n'));
 	await h.openNote(page, KEYS_NOTE, 'live');

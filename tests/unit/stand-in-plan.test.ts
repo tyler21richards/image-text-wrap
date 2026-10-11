@@ -210,6 +210,18 @@ test('anchors move with an edit in ordinary text and are found again otherwise',
 	assert.equal(moveAnchors(anchors, before, row, row.apply(before)), null);
 });
 
+test('a list marker added or removed right above a picture is not a shortcut: the picture joins or leaves the item', () => {
+	const before = doc(['Intro.', '', 'item', '![[a.png|wrap-left|60]]', 'Text.', '', 'End.']);
+	const anchors = docAnchors(before);
+	assert.equal(anchors.length, 1);
+	const marker = ChangeSet.of({ from: before.line(3).from, insert: '- ' }, before.length);
+	assert.equal(moveAnchors(anchors, before, marker, marker.apply(before)), null);
+	assert.deepEqual(docAnchors(marker.apply(before)), []);
+	// Plain typing in that line is still a shortcut.
+	const typing = ChangeSet.of({ from: before.line(3).from, insert: 'an ' }, before.length);
+	assert.deepEqual(fields(moveAnchors(anchors, before, typing, typing.apply(before))!), fields(docAnchors(typing.apply(before))));
+});
+
 test('whenever anchors are moved rather than found again, they are what a new scan finds', () => {
 	const base = [
 		'---',

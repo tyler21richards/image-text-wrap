@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { scanLines, dropTargets, isPlainLine, opensOrCloses } from '../../src/markdown/lines.ts';
+import { scanLines, dropTargets, isPlainLine, lastLineAffected, opensOrCloses } from '../../src/markdown/lines.ts';
 import { LINE_POOL, pick, random } from './markdown-samples.ts';
 
 const scan = (text: string) => scanLines(text.split('\n'));
@@ -119,6 +119,62 @@ test('plain lines: only ordinary text', () => {
 		'![[a.png|wrap-left|60]]', // its pipes could make it a table row
 	];
 	for (const line of notPlain) assert.equal(isPlainLine(line), false, line);
+});
+
+const kinds = (text: string) => scan(text).map((info) => `${info.kind}${info.startsBlock ? '*' : ''}`);
+
+test('a line that continues a list item, quote or footnote without its marker belongs to it', () => {
+	assert.deepEqual(kinds(['- item', '![[a.png|wrap-left|60]]', 'more', '', 'After.'].join('\n')), ['list*', 'list', 'list', 'blank', 'paragraph*']);
+	assert.deepEqual(kinds(['> quote', '![[a.png|wrap-left|60]]', '', 'After.'].join('\n')), ['quote*', 'quote', 'blank', 'paragraph*']);
+	assert.deepEqual(kinds(['[^1]: note', 'lazy ![[a.png|wrap-left|60]]', '', '![[a.png|wrap-left|60]]'].join('\n')), ['footnote*', 'footnote', 'blank', 'paragraph*']);
+	// Reading view (1.14.4) also continues an empty list item and a heading in a quote.
+	assert.deepEqual(kinds('-\n![[a.png|wrap-left|60]]'), ['list*', 'list']);
+	assert.deepEqual(kinds('> # Heading\n![[a.png|wrap-left|60]]'), ['quote*', 'quote']);
+	// An indented line after a quote or footnote line continues it too; in a list it stays indented.
+	assert.deepEqual(kinds('> quote\n    more'), ['quote*', 'quote']);
+	assert.deepEqual(kinds('[^1]: note\n    more'), ['footnote*', 'footnote']);
+	assert.deepEqual(kinds('- item\n  more\nlazy'), ['list*', 'indented', 'list']);
+	// A lazy line keeps the list going: the next item continues it.
+	assert.deepEqual(kinds('- a\nlazy\n- b'), ['list*', 'list', 'list']);
+	// Blocks that interrupt a paragraph end it.
+	assert.deepEqual(kinds('- item\n# Heading\ntext'), ['list*', 'heading*', 'paragraph*']);
+	assert.deepEqual(kinds('> quote\n---'), ['quote*', 'hr*']);
+	assert.deepEqual(kinds('- item\n```\ncode\n```'), ['list*', 'fence*', 'inside', 'fence']);
+});
+
+test('a footnote definition, unless it is glued under a paragraph', () => {
+	assert.deepEqual(kinds('Text.\n\n[^1]: ![[a.png|wrap-left|60]] note'), ['paragraph*', 'blank', 'footnote*']);
+	// Reading view draws this one as paragraph text (Live Preview still marks it a footnote).
+	assert.deepEqual(kinds('Text right above.\n[^1]: ![[a.png|wrap-left|60]] note'), ['paragraph*', 'paragraph']);
+	assert.equal(isPlainLine('[^1]: note'), false);
+});
+
+test('one to three spaces before a line change nothing outside a list', () => {
+	for (const pad of [' ', '  ', '   ']) {
+		assert.deepEqual(kinds(`Intro.\n\n${pad}![[a.png|wrap-left|60]]\nText.`), ['paragraph*', 'blank', 'paragraph*', 'paragraph'], pad);
+		assert.deepEqual(kinds(`Intro.\n\n${pad}# Title\n${pad}- item`), ['paragraph*', 'blank', 'heading*', 'list*'], pad);
+	}
+	// Four spaces or a tab make indented code after a blank line, and continue a paragraph right under one.
+	assert.deepEqual(kinds('Intro.\n\n    code\n\tcode'), ['paragraph*', 'blank', 'indented', 'indented']);
+	assert.deepEqual(kinds('Paragraph.\n    ![[a.png|wrap-left|60]]'), ['paragraph*', 'paragraph']);
+	// In a list an indented line continues the item, whatever its depth, unless a blank line comes before
+	// it and it is indented less than the item's text: then the list has ended.
+	assert.deepEqual(kinds('- item\n ![[a.png|wrap-left|60]]'), ['list*', 'indented']);
+	assert.deepEqual(kinds('- item\n\n  ![[a.png|wrap-left|60]]'), ['list*', 'blank', 'indented']);
+	assert.deepEqual(kinds('- item\n\n ![[a.png|wrap-left|60]]\nText.'), ['list*', 'blank', 'paragraph*', 'paragraph']);
+	assert.deepEqual(kinds('1. item\n\n  ![[a.png|wrap-left|60]]'), ['list*', 'blank', 'paragraph*']);
+	assert.deepEqual(kinds('10. item\n\n   ![[a.png|wrap-left|60]]'), ['list*', 'blank', 'paragraph*']);
+	assert.deepEqual(kinds('-   item\n\n   ![[a.png|wrap-left|60]]'), ['list*', 'blank', 'paragraph*']);
+	assert.deepEqual(targets('Intro.\n\n ![[a.png|wrap-left|60]]\nText.'), [0, 2, 4]);
+});
+
+test('lastLineAffected: to the next blank line, then over the indented lines after it', () => {
+	const lines = ['- a', 'lazy', 'more', '', '', '  indented', ' x', '', 'Next.', 'After.'];
+	const last = (n: number) => lastLineAffected(n, lines.length - 1, (k) => lines[k]!);
+	assert.equal(last(0), 8);
+	assert.equal(last(5), 8);
+	assert.equal(last(8), 9);
+	assert.equal(last(9), 9);
 });
 
 test('lines that can open or close code, math, comments or frontmatter', () => {

@@ -14,7 +14,7 @@
 
 import type { ChangeDesc, Text } from '@codemirror/state';
 import { findImageLinks, isSizeSegment, type ImageLink } from '../grammar';
-import { scanLines } from '../markdown/lines';
+import { isPlainLine, lastLineAffected, scanLines } from '../markdown/lines';
 
 export type FloatSide = 'left' | 'right';
 
@@ -130,6 +130,19 @@ export function docAnchors(doc: Text): DocAnchor[] {
 	});
 }
 
+/**
+ * Whether an edit of lines that are not all plain text can change how a wrapped image line below it is
+ * read: a list item, quote or footnote that the edit opens or closes reaches the lines below it that
+ * continue it without a marker (lastLineAffected).
+ */
+function reachesWrapBelow(was: EditedLines, now: EditedLines, doc: Text, to: number): boolean {
+	if (was.lines.every(isPlainLine) && now.lines.every(isPlainLine)) return false;
+	const n = doc.lineAt(to).number;
+	const last = lastLineAffected(n, doc.lines, (k) => doc.line(k).text);
+	for (let k = n + 1; k <= last; k++) if (/wrap-(?:left|right)/.test(doc.line(k).text)) return true;
+	return false;
+}
+
 /** Edits with more separate changes than this (a replace-all) are left to a new scan. */
 const MAX_MOVED_CHANGES = 8;
 
@@ -162,7 +175,7 @@ export function moveAnchors(before: readonly DocAnchor[], startDoc: Text, change
 		}
 		const was = editedLines(startDoc, fromA, toA);
 		const now = editedLines(doc, fromB, toB);
-		kept = editKeepsAnchors(was, now, was.above === undefined || now.above === undefined);
+		kept = editKeepsAnchors(was, now, was.above === undefined || now.above === undefined) && !reachesWrapBelow(was, now, doc, toB);
 	});
 	if (!kept) return null;
 	// Each anchor's own line is unchanged, so only its position moves.

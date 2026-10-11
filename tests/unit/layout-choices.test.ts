@@ -58,6 +58,16 @@ test('spacing applies only while wrapped, and only when it changes', () => {
 	assert.deepEqual(layoutForGap(L('block', 24), 8), L('block', 8));
 });
 
+test('a caption named like an inherited object member is in line: spacing is off and wrapping turns on', () => {
+	for (const name of Object.getOwnPropertyNames(Object.prototype)) {
+		const link = pickLinkAtCursor(`![[square.png|${name}|200]]`, 3)!;
+		assert.deepEqual(link.layout, L('none'), name);
+		assert.equal(layoutForGap(link.layout, 24), null, name);
+		assert.deepEqual(layoutAfterWrapClick(link.layout, 'left', 8), L('left', 8), name);
+		assert.equal(layoutForWrapCommand(link.layout, 'none', 16), null, name);
+	}
+});
+
 test('commands pick the image link under the cursor, else the only one on the line', () => {
 	const line = 'See ![[a.png|100]] and ![[b.png|wrap-left]] here';
 	assert.equal(pickLinkAtCursor(line, 6)?.target, 'a.png');

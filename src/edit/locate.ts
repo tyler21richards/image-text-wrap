@@ -45,6 +45,8 @@ function unsupportedReason(info: LineInfo | undefined, lineText: string): string
 		case 'list':
 		case 'indented':
 			return 'in a list';
+		case 'footnote':
+			return 'in a footnote';
 		case 'heading':
 			return 'in a heading';
 	}

@@ -24,7 +24,7 @@ test('a line holding only a wrapped image gets its classes', () => {
 	});
 });
 
-test('lines in code, comments, math, frontmatter, lists, quotes, tables and headings keep their height', () => {
+test('lines in code, comments, math, frontmatter, lists, quotes, tables and headings keep their height (lists and quotes are marked to stay in line)', () => {
 	const text = [
 		'---', // 1
 		'cover: "![[a.png|wrap-left]]"', // 2
@@ -55,7 +55,95 @@ test('lines in code, comments, math, frontmatter, lists, quotes, tables and head
 		'![[a.png|wrap-right|120]]', // 27 the one real wrapped image
 		'Text beside it.', // 28
 	].join('\n');
-	assert.deepEqual(classes(stateOf(text)).lines, ['27: itw-image-line itw-image-line-right']);
+	assert.deepEqual(classes(stateOf(text)).lines, ['20: itw-keep-in-line', '21: itw-keep-in-line', '27: itw-image-line itw-image-line-right']);
+});
+
+/** "from-to: class" for every decoration that covers part of a line (offsets in the note). */
+function marks(state: EditorState): string[] {
+	const out: string[] = [];
+	state.field(lineClassField).decorations.between(0, state.doc.length, (from, to, deco) => {
+		if (to > from) out.push(`${from}-${to}: ${String(deco.spec.class)}`);
+	});
+	return out;
+}
+
+test('a line of several images all wrapped left or right takes no height', () => {
+	const two = (a: string, b: string) => classes(stateOf(`Intro.\n\n${a} ${b}\nText.`)).lines;
+	assert.deepEqual(two('![[a.png|wrap-left|60]]', '![[b.png|wrap-right|60]]'), ['3: itw-image-line itw-image-line-multi']);
+	assert.deepEqual(two('![[a.png|wrap-left|60]]', '![x|wrap-left|gap-8](b.png)'), ['3: itw-image-line itw-image-line-multi']);
+	// Not when one of them is in line or top and bottom, or text shares the line.
+	assert.deepEqual(two('![[a.png|wrap-left|60]]', '![[b.png|60]]'), []);
+	assert.deepEqual(two('![[a.png|wrap-left|60]]', '![[b.png|wrap-block|60]]'), []);
+	assert.deepEqual(two('![[a.png|wrap-left|60]]', 'and text'), []);
+});
+
+test('a remote or data-URI image wrapped on a line with other content gets a class around it', () => {
+	const url = 'https://example.com/a.png';
+	const data = 'data:image/png;base64,AAAA';
+	const at = (text: string, needle: string) => `${text.indexOf(needle)}-${text.indexOf(needle) + needle.length}`;
+	let text = `Intro.\n\nStart ![wrap-left|120](${url}) and more text.`;
+	assert.deepEqual(marks(stateOf(text)), [`${at(text, `![wrap-left|120](${url})`)}: itw-inline-left`]);
+	assert.deepEqual(classes(stateOf(text)).lines, ['3: itw-inline-left']);
+	text = `![wrap-right|gap-8](${data}) text after it`;
+	assert.deepEqual(marks(stateOf(text)), [`${at(text, `![wrap-right|gap-8](${data})`)}: itw-inline-right itw-gap-8`]);
+	text = `Text ![wrap-block](${url})`;
+	assert.deepEqual(marks(stateOf(text)), [`${at(text, `![wrap-block](${url})`)}: itw-inline-block`]);
+	// On a line of wrapped images only, beside the line class.
+	text = `![[a.png|wrap-left|60]] ![wrap-right|60](${url})`;
+	assert.deepEqual(classes(stateOf(text)).lines, ['1: itw-image-line itw-image-line-multi', '1: itw-inline-right']);
+	// Alone on its line the line class covers it; a local image floats by its own alt text; an image in
+	// line needs nothing; and in a list item the picture stays in line.
+	assert.deepEqual(marks(stateOf(`![wrap-left|120](${url})\nText.`)), []);
+	assert.deepEqual(classes(stateOf(`![wrap-left|120](${url})\nText.`)).lines, ['1: itw-image-line itw-image-line-left']);
+	assert.deepEqual(marks(stateOf('Start ![[a.png|wrap-left|120]] and more.')), []);
+	assert.deepEqual(marks(stateOf(`Start ![120](${url}) and more.`)), []);
+	assert.deepEqual(classes(stateOf(`- Start ![wrap-left|120](${url}) and more.`)).lines, ['1: itw-keep-in-line']);
+});
+
+test('a wrapped image line indented by one to three spaces gets its class; in a list it does not', () => {
+	for (const pad of [' ', '  ', '   ']) {
+		assert.deepEqual(classes(stateOf(`Intro.\n\n${pad}![[a.png|wrap-left|60]]\nText.`)).lines, ['3: itw-image-line itw-image-line-left'], pad);
+	}
+	assert.deepEqual(classes(stateOf('- item\n\n  ![[a.png|wrap-left|60]]\nText.')).lines, []);
+	assert.deepEqual(classes(stateOf('- item\n\n ![[a.png|wrap-left|60]]\nText.')).lines, ['3: itw-image-line itw-image-line-left']);
+});
+
+test('a line that continues a list item, quote or footnote is marked to keep its picture in line', () => {
+	const lines = (text: string) => classes(stateOf(text)).lines;
+	assert.deepEqual(lines('- item\n![[a.png|wrap-left|60]]\nText.'), ['2: itw-keep-in-line']);
+	assert.deepEqual(lines('> quote\n![[a.png|wrap-left|60]]\nText.'), ['2: itw-keep-in-line']);
+	assert.deepEqual(lines('Intro.\n\n[^1]: ![[a.png|wrap-left|60]] note'), ['3: itw-keep-in-line']);
+	assert.deepEqual(lines('Intro.\n\n[^1]: note\nmore ![[a.png|wrap-left|60]] text'), ['4: itw-keep-in-line']);
+	// Glued under a paragraph a footnote is text, and its picture floats as Reading view draws it.
+	assert.deepEqual(lines('Intro.\n[^1]: ![[a.png|wrap-left|60]] note'), []);
+	// No wrapped image, no class.
+	assert.deepEqual(lines('- item\n![[a.png|60]]'), []);
+});
+
+test('adding or removing a list marker above an image line re-reads it', () => {
+	let state = stateOf(['Intro.', '', 'item', '![[a.png|wrap-left|60]]', 'Text.', '', 'End.'].join('\n'));
+	assert.deepEqual(classes(state).lines, ['4: itw-image-line itw-image-line-left']);
+	const at = state.doc.line(3).from;
+	state = state.update({ changes: { from: at, insert: '- ' } }).state;
+	assert.deepEqual(classes(state).lines, ['4: itw-keep-in-line']);
+	state = state.update({ changes: { from: at, to: at + 2 } }).state;
+	assert.deepEqual(classes(state).lines, ['4: itw-image-line itw-image-line-left']);
+	// A list item's marker decides whether an indented line after a blank line still belongs to it.
+	state = stateOf(['- item', '', '  ![[a.png|wrap-left|60]]', 'Text.'].join('\n'));
+	assert.deepEqual(classes(state).lines, []);
+	state = state.update({ changes: { from: 0, to: 1, insert: '1.' } }).state;
+	assert.deepEqual(classes(state).lines, ['3: itw-image-line itw-image-line-left']);
+});
+
+test('typing right after a remote image keeps its class on the link only', () => {
+	const url = 'https://example.com/a.png';
+	const link = `![wrap-left|120](${url})`;
+	let state = stateOf(`Start ${link} more.`);
+	const end = state.doc.toString().indexOf(link) + link.length;
+	state = state.update({ changes: { from: end, insert: 'xyz' } }).state;
+	assert.deepEqual(marks(state), [`6-${6 + link.length}: itw-inline-left`]);
+	state = state.update({ changes: { from: 6, insert: 'abc ' } }).state;
+	assert.deepEqual(marks(state), [`10-${10 + link.length}: itw-inline-left`]);
 });
 
 test('links Obsidian does not draw as wrapped images give no line class', () => {

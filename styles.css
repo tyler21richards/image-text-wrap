@@ -4,14 +4,18 @@
  * Rendering is CSS only. Layout lives in the image link (![[photo.png|wrap-left|gap-24|300]]), and
  * Obsidian copies the text between the path and the size into the embed's alt attribute, so the
  * same rules drive Reading view and PDF export. In Live Preview the plugin also tags each line that
- * holds a wrapped image (.itw-image-line-*), which covers remote images, whose alt sits on the inner img.
+ * holds only wrapped images (.itw-image-line-*), and puts a class around a remote image wrapped
+ * anywhere else (.itw-inline-*): a remote image's alt sits on the inner img, out of reach of the rules.
  *
  * Tokens are matched exactly inside the pipe-separated alt: "x", "x|…", "…|x|…" or "…|x".
  * Classes the plugin adds:
- *   .itw-has-wrap      on .cm-editor, when the note has any wrapped image (Live Preview fixes)
- *   .itw-image-line-*  on the .cm-line that holds nothing but one wrapped image
- *   .itw-gap-*         on that line, for its spacing
- *   .itw-wrap-note     on Reading view sections and the PDF root of notes with wrapped images
+ *   .itw-has-wrap           on .cm-editor, when the note has any wrapped image (Live Preview fixes)
+ *   .itw-image-line-*       on the .cm-line that holds nothing but one wrapped image (-left, -right, -block),
+ *                           or several images all wrapped left or right (-multi)
+ *   .itw-inline-*           around a remote or data-URI image wrapped on a line with other content
+ *   .itw-gap-*              on that line or around that image, for its spacing
+ *   .itw-keep-in-line       on a list, quote or footnote line holding a wrapped image (it stays in line)
+ *   .itw-wrap-note          on Reading view sections and the PDF root of notes with wrapped images
  */
 
 /* ---------- Spacing ---------- */
@@ -48,7 +52,9 @@ img:is([alt="gap-24"], [alt^="gap-24|"], [alt*="|gap-24|"], [alt$="|gap-24"]),
 p > img:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="|wrap-left"]),
 p > img:is([alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt$="|wrap-right"]),
 .itw-image-line-left > .image-embed,
-.itw-image-line-right > .image-embed {
+.itw-image-line-right > .image-embed,
+.itw-inline-left > .image-embed,
+.itw-inline-right > .image-embed {
 	display: block;
 	width: fit-content;
 	max-width: var(--itw-max-width, 50%);
@@ -61,7 +67,8 @@ p > img:is([alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt
 
 .image-embed:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="|wrap-left"]),
 p > img:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="|wrap-left"]),
-.itw-image-line-left > .image-embed {
+.itw-image-line-left > .image-embed,
+.itw-inline-left > .image-embed {
 	float: left;
 	clear: left;
 	margin-left: 0;
@@ -70,7 +77,8 @@ p > img:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="
 
 .image-embed:is([alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt$="|wrap-right"]),
 p > img:is([alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt$="|wrap-right"]),
-.itw-image-line-right > .image-embed {
+.itw-image-line-right > .image-embed,
+.itw-inline-right > .image-embed {
 	float: right;
 	clear: right;
 	margin-right: 0;
@@ -81,18 +89,25 @@ p > img:is([alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt
 .image-embed:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="|wrap-left"], [alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt$="|wrap-right"]) img,
 .itw-image-line-left > .image-embed img,
 .itw-image-line-right > .image-embed img,
+.itw-inline-left > .image-embed img,
+.itw-inline-right > .image-embed img,
 p > img:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="|wrap-left"], [alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt$="|wrap-right"]) {
 	max-width: 100%;
 	height: auto;
 }
 
 /*
- * In Reading view the img sits directly in the embed; as an inline box it would leave the line's descent
- * below the picture (6px at 16px text), making the float taller than the picture. Live Preview already
- * draws it as a block.
+ * As an inline box the picture would leave the line's descent below it (6px at 16px text), making the
+ * float taller than the picture: in Reading view the img sits directly in the embed, and in Live Preview
+ * Obsidian draws the img's wrapper inline-flex. (A line of wrapped images only has no descent, its text
+ * size being 0, but an image sharing its line has.)
  */
 .image-embed:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="|wrap-left"], [alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt$="|wrap-right"], [alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt$="|wrap-block"]) > img {
 	display: block;
+}
+.image-embed:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="|wrap-left"], [alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt$="|wrap-right"], [alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt$="|wrap-block"]) > .image-wrapper,
+:is(.itw-image-line-left, .itw-image-line-right, .itw-image-line-block, .itw-inline-left, .itw-inline-right, .itw-inline-block) > .image-embed > .image-wrapper {
+	display: flex;
 }
 
 /* ---------- Top and bottom ---------- */
@@ -100,7 +115,8 @@ p > img:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="
 /* Spacing sits in padding, not margin: CodeMirror measures boxes, so a margin would shift every later line. */
 .image-embed:is([alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt$="|wrap-block"]),
 p > img:is([alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt$="|wrap-block"]),
-.itw-image-line-block > .image-embed {
+.itw-image-line-block > .image-embed,
+.itw-inline-block > .image-embed {
 	display: block;
 	width: fit-content;
 	max-width: 100%;
@@ -113,11 +129,14 @@ p > img:is([alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt
 /* ---------- Images where wrapping is not offered ---------- */
 
 /*
- * Inside list items, quotes, callouts, tables and headings an image keeps Obsidian's in-line layout even
- * if its link has a wrap token: Obsidian measures list and quote indents with the image in the line, so a
- * float there would pull the first words under the picture. The toolbar and dragging skip these too.
+ * Inside list items, quotes, callouts, footnotes, tables and headings an image keeps Obsidian's in-line
+ * layout even if its link has a wrap token: Obsidian measures list and quote indents with the image in
+ * the line, so a float there would pull the first words under the picture. The toolbar and dragging skip
+ * these too. Footnotes, and lines that continue a list item or footnote without its marker, get no
+ * reliable class from Obsidian, so the plugin marks them (.itw-keep-in-line) where Reading view draws
+ * them inside the item.
  */
-.is-live-preview .cm-content > .cm-line:is(.HyperMD-list-line, .HyperMD-quote, .HyperMD-header) .image-embed:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="|wrap-left"], [alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt$="|wrap-right"], [alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt$="|wrap-block"]),
+.is-live-preview .cm-content > .cm-line:is(.HyperMD-list-line, .HyperMD-quote, .HyperMD-header, .itw-keep-in-line) .image-embed:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="|wrap-left"], [alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt$="|wrap-right"], [alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt$="|wrap-block"]),
 .cm-content :is(.cm-table-widget, .cm-callout) .image-embed:is([alt="wrap-left"], [alt^="wrap-left|"], [alt*="|wrap-left|"], [alt$="|wrap-left"], [alt="wrap-right"], [alt^="wrap-right|"], [alt*="|wrap-right|"], [alt$="|wrap-right"], [alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt$="|wrap-block"]) {
 	float: none;
 	clear: none;
@@ -138,14 +157,24 @@ p > img:is([alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt
 /* ---------- The image's own line in Live Preview ---------- */
 
 /*
- * A line that holds only a wrapped image takes no height of its own, so the float's top meets the
+ * A line that holds only wrapped images takes no height of its own, so the float's top meets the
  * first line of text beside it (and a top-and-bottom image is spaced only by its padding).
  */
 /* Live Preview only: Source mode shows the link text on this line. */
-.is-live-preview .itw-has-wrap .cm-content > .cm-line:is(.itw-image-line-left, .itw-image-line-right, .itw-image-line-block) {
+.is-live-preview .itw-has-wrap .cm-content > .cm-line:is(.itw-image-line-left, .itw-image-line-right, .itw-image-line-block, .itw-image-line-multi) {
 	font-size: 0;
 	line-height: 0;
 	padding-block: 0;
+}
+
+/*
+ * Spaces before the link: Obsidian gives a line that starts with spaces a hanging indent, measured at
+ * CodeMirror's empty placeholder in front of the picture. In the line, a left float would push that
+ * placeholder past the picture, and the indent would push the picture as far right. Floated itself,
+ * the placeholder stays at the start of the line (it has no size), so the line gets no indent.
+ */
+.is-live-preview .itw-has-wrap .cm-content > .cm-line.itw-image-line > .cm-widgetBuffer {
+	float: left;
 }
 
 /* ---------- Text beside a float, Live Preview ---------- */
@@ -158,8 +187,9 @@ p > img:is([alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt
 /*
  * Lines with a hanging indent (lists, quotes) measure it at render time; beside a float that would
  * include the image width. As their own formatting context they sit beside the image as a whole box.
+ * Not the image's own line: that would hold its float inside it.
  */
-.is-live-preview .itw-has-wrap .cm-content > .cm-line:is(.HyperMD-list-line, .HyperMD-quote, .HyperMD-hr, .HyperMD-codeblock, [style*="text-indent"]) {
+.is-live-preview .itw-has-wrap .cm-content > .cm-line:is(.HyperMD-list-line, .HyperMD-quote, .HyperMD-hr, .HyperMD-codeblock, [style*="text-indent"]):not(.itw-image-line) {
 	display: flow-root;
 }
 
