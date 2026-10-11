@@ -1,6 +1,6 @@
-// Drag to move (brief 4.3, 6.3): press an image in Live Preview, move it, drop it at the start of
-// another block. One ViewPlugin per editor listens for presses on the editor's content; everything else
-// lives in the gesture (gesture.ts) for as long as the press lasts.
+// Drag to move (brief 4.3, 6.3): press an image in Live Preview (with a finger, press and hold), move it,
+// drop it at the start of another block. One ViewPlugin per editor listens for presses on the editor's
+// content; everything else lives in the gesture (gesture.ts) for as long as the press lasts.
 //
 // Listeners go on the editor's DOM directly: CodeMirror hands no events from Obsidian's image widgets
 // to extensions. (As in Adjustable Media, src/view/plainDrag.ts, MIT, (c) 2026 Yi-luo-hua.)
@@ -48,8 +48,8 @@ class DragHandler implements PluginValue {
 		// With the setting off nothing is followed, so Obsidian's own image drag works as before.
 		if (this.drag || !this.plugin.settings.dragToMove) return;
 		if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
-		// Touch presses scroll the note; long-press to drag is for the mobile milestone.
-		if (event.pointerType === 'touch') return;
+		// A finger (touch or pen) picks the image up with a long press (gesture.ts); a second finger is not followed.
+		if (!event.isPrimary) return;
 		if (!view.state.field(editorLivePreviewField, false)) return;
 		if (view.state.readOnly || !view.state.facet(EditorView.editable)) return;
 		const img = event.target;
