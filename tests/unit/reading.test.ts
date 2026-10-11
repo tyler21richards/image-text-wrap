@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { embedHasFloat, keepWithNext, textHasFloat, wrapFromAlt } from '../../src/reading/wraps.ts';
-import { floatFrom, moveFloat, planHost, reachedHosts, type FloatBox } from '../../src/reading/stand-in-plan.ts';
+import { embedHasFloat, keepWithNext, layoutFromAlt, textHasFloat, wrapFromAlt } from '../../src/reading/wraps.ts';
+import { drawnWidth, floatFrom, moveFloat, narrowing, planHost, reachedHosts, reshapeFloat, type FloatBox } from '../../src/reading/stand-in-plan.ts';
 
 test('a note has a float only for wrap-left or wrap-right images in body text', () => {
 	assert.equal(textHasFloat('# Title\n\n![[a.png|wrap-left|300]]\nText'), true);
@@ -50,7 +50,7 @@ test('a heading right before a float block keeps with it in print', () => {
 	assert.deepEqual(keepWithNext([]), []);
 });
 
-const right = (top: number, bottom: number): FloatBox => ({ side: 'right', top, bottom, imgTop: top, width: 260, gap: 16 });
+const right = (top: number, bottom: number): FloatBox => ({ side: 'right', top, bottom, imgTop: top, imgHeight: bottom - top - 8, width: 260, gap: 16, inset: 0 });
 
 test('a float reaches the sections that start above its bottom', () => {
 	const hosts = [100, 300, 500, 700].map((top) => ({ top, skip: false }));
@@ -64,7 +64,7 @@ test('a stand-in is the part of the float below the host top', () => {
 	assert.equal(plans.length, 1);
 	assert.deepEqual(
 		{ ...plans[0]! },
-		{ float: 0, host: 0, side: 'right', marginTop: 0, height: 367, offset: 232, width: 260, gap: 16 },
+		{ float: 0, host: 0, side: 'right', marginTop: 0, height: 367, offset: 232, width: 260, gap: 16, pictureHeight: 591 },
 	);
 	// A float that ends above the host gets none.
 	assert.deepEqual(planHost(600, [{ index: 0, box: right(0, 590) }]), []);
@@ -108,4 +108,46 @@ test('a float moved against its hosts, as when its section is re-rendered off th
 	// 48px shorter: it reaches 48px further into the host. 200px taller: it no longer reaches it.
 	assert.deepEqual(plan(moveFloat(floatFrom(box, 200), -48)), [[248, 252]]);
 	assert.deepEqual(plan(moveFloat(floatFrom(box, 200), 200)), []);
+});
+
+test('the layout of a rendered image from its alt', () => {
+	assert.deepEqual(layoutFromAlt('A tall picture|wrap-left|gap-24'), { ...layoutFromAlt('wrap-left'), gap: 24 });
+	assert.equal(layoutFromAlt('wrap-right').gap, 16);
+	assert.equal(layoutFromAlt(null).wrap, 'none');
+});
+
+test('a float whose link was edited off the page: another side, size or spacing where it stands', () => {
+	// The fixture's tall picture, 260x585, in the coordinates of a host it reaches 361px into.
+	const box: FloatBox = { side: 'right', top: -232, bottom: 361, imgTop: -232, imgHeight: 585, width: 260, gap: 16, inset: 0 };
+	// Wrap text left instead: the same float on the other side.
+	assert.deepEqual(reshapeFloat(box, { side: 'left', width: 260, gap: 16 }), { ...box, side: 'left' });
+	// 240px wide: the picture keeps its aspect ratio and its top, so it ends 45px higher.
+	const narrower = reshapeFloat(box, { side: 'right', width: 240, gap: 16 });
+	assert.equal(narrower.imgHeight, 540);
+	assert.equal(narrower.bottom, 316);
+	assert.equal(narrower.top, box.top);
+	// Planned again in that host: the stand-in is 45px shorter.
+	assert.deepEqual(
+		planHost(0, [{ index: 0, box: narrower }]).map((p) => [p.width, p.height, p.pictureHeight]),
+		[[240, 316, 540]],
+	);
+});
+
+test('the width a wrapped image is drawn at after its link changed', () => {
+	// 260 asked, drawn 260 (under the cap): 240 asked is drawn 240, 400 asked is held at the cap.
+	assert.equal(drawnWidth(240, 260, 260, 350), 240);
+	assert.equal(drawnWidth(400, 260, 260, 350), 350);
+	// Drawn narrower than asked: it was held at the cap, so the cap is what was drawn.
+	assert.equal(drawnWidth(600, 500, 350, 999), 350);
+	assert.equal(drawnWidth(300, 500, 350, 999), 300);
+});
+
+test('a section that keeps floats to itself is narrowed as the floats beside it narrow it', () => {
+	const tall: FloatBox = { side: 'right', top: -40, bottom: 635, imgTop: -40, imgHeight: 667, width: 300, gap: 16, inset: 0 };
+	assert.deepEqual(narrowing([tall]), { left: 0, right: 316 });
+	// The widest on each side; one that ends above the section does not count.
+	const left: FloatBox = { ...tall, side: 'left', width: 200, gap: 24, inset: 4 };
+	const above: FloatBox = { ...tall, width: 500, bottom: 0 };
+	assert.deepEqual(narrowing([tall, left, above]), { left: 228, right: 316 });
+	assert.deepEqual(narrowing([]), { left: 0, right: 0 });
 });

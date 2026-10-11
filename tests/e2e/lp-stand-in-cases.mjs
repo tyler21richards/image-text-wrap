@@ -13,6 +13,10 @@
 // 3. "Widest wrapped image" changed (50% to 30%, through updateSettings, as the slider does) while the
 //    tall picture of Fixture.md shows through a stand-in: the stand-in takes the new width at once.
 //    Then 40px steps up until the picture's own line is drawn, recording jumps over 2px.
+// 4. The heading above the tall picture of Fixture.md folded: no copy of the hidden picture shows
+//    while scrolling up from the end with real wheel input.
+// 5. A picture never drawn in a new editor, landed beside with one scrollTop write: its copy is where
+//    the picture will be, so nothing moves when it is drawn (real wheel input up).
 // Every case with the plugin on; the jumps also with it off (disablePluginAndSave), as the control.
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const STRESS = 'Stand-in stress.md';
@@ -241,6 +245,111 @@ export default async ({ page, openNote, setNote, getNote, setWindowSize, watchEr
 	} finally {
 		await setWidth(saved);
 	}
+
+	// 4. A folded heading hides the tall picture of Fixture.md (line 12, under the heading on line 10):
+	// scrolling up from the end with real wheel input, no copy of it may show after the fold.
+	await open('Fixture.md');
+	const fold = () =>
+		page.evaluate(async () => {
+			const view = app.workspace.activeLeaf.view;
+			view.editor.setCursor({ line: 9, ch: 0 });
+			await new Promise((r) => setTimeout(r, 100));
+			app.commands.executeCommandById('editor:toggle-fold');
+			await new Promise((r) => setTimeout(r, 300));
+			const v = view.editor.cm;
+			const heading = v.lineBlockAt(v.state.doc.line(10).from);
+			return heading.to >= v.state.doc.line(12).to;
+		});
+	const folded = await fold();
+	try {
+		await page.evaluate(() => {
+			const v = app.workspace.activeLeaf.view.editor.cm;
+			v.dispatch({ selection: { anchor: v.state.doc.length } });
+			v.scrollDOM.scrollTop = v.scrollDOM.scrollHeight;
+		});
+		await sleep(400);
+		const box = await page.evaluate(() => {
+			const r = app.workspace.activeLeaf.view.editor.cm.scrollDOM.getBoundingClientRect();
+			return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+		});
+		await page.mouse.move(box.x, box.y);
+		let copies = 0;
+		for (let i = 0; i < 200; i++) {
+			await page.mouse.wheel(0, -40);
+			await sleep(60);
+			const state = await page.evaluate(() => {
+				const v = app.workspace.activeLeaf.view.editor.cm;
+				return { copy: !!v.contentDOM.querySelector(`.itw-stand-in-float[data-from="${v.state.doc.line(12).from}"]`), top: v.scrollDOM.scrollTop };
+			});
+			if (state.copy) copies++;
+			if (state.top === 0) break;
+		}
+		check(folded && copies === 0, `a picture inside a folded section gets no copy (folded: ${folded}; ${copies} steps showed one; 25 on the build before the fix)`);
+	} finally {
+		if (folded) await fold();
+	}
+
+	// 5. A picture never drawn in an editor: "Stand-in stress.md" opened in a new tab and dragged (one
+	// scrollTop write) to beside the lower part of its 788px picture, then real 40px wheel ticks up. When
+	// the picture's line is drawn, the picture must not move against the text, and no text may jump
+	// (the picture moved 92px against the text and the text jumped 72px before the fix).
+	const fresh = await page.evaluate(async (note) => {
+		const leaf = app.workspace.getLeaf('tab');
+		await leaf.openFile(app.vault.getAbstractFileByPath(note), { state: { mode: 'source', source: false }, active: true });
+		await new Promise((r) => setTimeout(r, 700));
+		const v = leaf.view.editor.cm;
+		v.dispatch({ selection: { anchor: 0 } });
+		v.scrollDOM.scrollTop = 0;
+		await new Promise((r) => setTimeout(r, 300));
+		v.scrollDOM.scrollTop = 2500;
+		await new Promise((r) => setTimeout(r, 900));
+		window.__itwFresh = leaf;
+		const r = v.scrollDOM.getBoundingClientRect();
+		return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+	}, STRESS);
+	const snap = () =>
+		page.evaluate(() => {
+			const v = window.__itwFresh.view.editor.cm;
+			const s = v.scrollDOM.getBoundingClientRect();
+			const from = v.state.doc.line(27).from;
+			const lines = [];
+			for (const el of v.contentDOM.querySelectorAll(':scope > .cm-line')) {
+				const r = el.getBoundingClientRect();
+				if (el.querySelector('.image-embed') || r.bottom < s.top || r.top > s.bottom) continue;
+				try {
+					lines.push([v.posAtDOM(el), r.top, r.height]);
+				} catch {
+					/* not a line of this editor */
+				}
+			}
+			const real = [...v.contentDOM.querySelectorAll('.image-embed')].find((e) => { try { return !e.closest('.itw-stand-in') && v.posAtDOM(e) === from; } catch { return false; } });
+			const copy = v.contentDOM.querySelector(`.itw-stand-in-float[data-from="${from}"]`);
+			const pic = real ?? copy;
+			return { scrollTop: v.scrollDOM.scrollTop, lines, kind: real ? 'real' : copy ? 'copy' : null, bottom: pic ? pic.getBoundingClientRect().bottom : null };
+		});
+	await page.mouse.move(fresh.x, fresh.y);
+	let prev = await snap();
+	let worstText = 0;
+	let switchMove = null;
+	const firstKind = prev.kind;
+	for (let i = 0; i < 40 && prev.scrollTop > 0; i++) {
+		await page.mouse.wheel(0, -40);
+		await sleep(80);
+		const next = await snap();
+		// The text's own movement: the most common move of lines drawn in both.
+		const moves = next.lines.map(([pos, top, h]) => { const p = prev.lines.find((l) => l[0] === pos); return p && Math.abs(p[2] - h) < 1 ? Math.round(top - p[1]) : null; }).filter((m) => m !== null);
+		const counts = new Map();
+		for (const m of moves) counts.set(m, (counts.get(m) ?? 0) + 1);
+		const scroll = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 0;
+		for (const m of moves) worstText = Math.max(worstText, Math.abs(m - scroll));
+		if (prev.kind === 'copy' && next.kind === 'real' && prev.bottom !== null && next.bottom !== null) switchMove = Math.round(next.bottom - prev.bottom - scroll);
+		prev = next;
+	}
+	await page.evaluate(() => window.__itwFresh.detach());
+	check(
+		firstKind === 'copy' && switchMove !== null && Math.abs(switchMove) <= 2 && worstText <= 2,
+		`a picture never drawn: landing beside it shows a copy (${firstKind}); when it is drawn it moves ${switchMove}px against the text, and text moves at most ${worstText}px against the scroll`,
+	);
 
 	lines.push(`console errors ${errors.length}`);
 	return lines.join('\n');

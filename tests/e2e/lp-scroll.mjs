@@ -1,8 +1,10 @@
 // Live Preview scroll stability probe (brief 7 item 6, milestone M1).
 //
-//   node scripts/obsidian.mjs run tests/e2e/lp-scroll.mjs [--disabled] [--out file.json] [--passes slow,fast,jump]
+//   node scripts/obsidian.mjs run tests/e2e/lp-scroll.mjs [--stress|--lines] [--disabled] [--out file.json] [--passes slow,fast,jump]
 //
-// Opens test-vault/Fixture.md in Live Preview at 1280x900 and scrolls it the way Adjustable Media's
+// Opens test-vault/Fixture.md (or with --stress "Stand-in stress.md", with --lines "Stand-in lines.md":
+// tall pictures on a line of several and inside sentences; both notes are written by this probe) in
+// Live Preview at 1280x900 and scrolls it the way Adjustable Media's
 // probes did (docs/SCROLL_VALIDATION.md, MIT, (c) 2026 Yi-luo-hua): 40px steps top to bottom and back,
 // waiting two animation frames + 30ms after each; a fast pass of 120px every 45ms; and jumps that put
 // a wrapped image's lower half straight into view. After every step it records:
@@ -43,16 +45,36 @@ function installHelpers() {
 		return found;
 	};
 
-	/** Wrapped image lines in the note: { n, from, side }. */
+	/**
+	 * Images wrapped left or right in the note's paragraphs: alone on their line, on a line of several,
+	 * or inside a sentence. { n (line), from (the link), lineFrom, side }. Those that do not float (in a
+	 * list item, say) are left out by calibrate.
+	 */
 	const images = () => {
 		const v = view();
 		const out = [];
 		for (let n = 1; n <= v.state.doc.lines; n++) {
 			const line = v.state.doc.line(n);
-			const m = /^!\[.*wrap-(left|right)/.exec(line.text);
-			if (m) out.push({ n, from: line.from, side: m[1] });
+			if (!/wrap-(left|right)/.test(line.text) || /^(\s|#|>|[-*+] |\d+[.)] |\|)/.test(line.text)) continue;
+			for (const m of line.text.matchAll(/!\[\[[^\]]*\]\]|!\[[^\]]*\]\([^)]*\)/g)) {
+				const side = /\|wrap-(left|right)(\||\]|$)/.exec(m[0])?.[1];
+				if (side) out.push({ n, from: line.from + m.index, lineFrom: line.from, side });
+			}
 		}
 		return out;
+	};
+
+	/** The image embed CodeMirror draws for the link at `from`, if drawn. */
+	const embedEl = (v, from) => {
+		for (const embed of v.contentDOM.querySelectorAll('.image-embed')) {
+			if (embed.closest('.itw-stand-in')) continue;
+			try {
+				if (v.posAtDOM(embed) === from) return embed;
+			} catch {
+				/* not in the document */
+			}
+		}
+		return null;
 	};
 
 	const cal = new Map();
@@ -63,21 +85,22 @@ function installHelpers() {
 		for (const img of images()) {
 			for (let i = 0; i < 4; i++) {
 				const s = v.scrollDOM.getBoundingClientRect();
-				v.scrollDOM.scrollTop += v.documentTop + v.lineBlockAt(img.from).top - (s.top + 120);
+				v.scrollDOM.scrollTop += v.documentTop + v.lineBlockAt(img.lineFrom).top - (s.top + 120);
 				await frames(2);
 				await sleep(60);
 			}
-			const el = lineEl(v, img.from);
-			const embed = el?.querySelector('.image-embed');
+			const embed = embedEl(v, img.from);
 			if (!embed) continue;
 			const r = embed.getBoundingClientRect();
 			const c = v.contentDOM.getBoundingClientRect();
 			const st = getComputedStyle(embed);
+			if (st.float === 'none') continue;
 			cal.set(img.from, {
 				n: img.n,
 				from: img.from,
+				lineFrom: img.lineFrom,
 				side: img.side,
-				layoutTop: r.top - v.documentTop - v.lineBlockAt(img.from).top,
+				layoutTop: r.top - v.documentTop - v.lineBlockAt(img.lineFrom).top,
 				w: r.width,
 				h: r.height,
 				left: r.left - c.left,
@@ -150,12 +173,11 @@ function installHelpers() {
 		for (const img of images()) {
 			const k = cal.get(img.from);
 			if (!k) continue;
-			const top = v.documentTop + v.lineBlockAt(img.from).top + k.layoutTop;
+			const top = v.documentTop + v.lineBlockAt(img.lineFrom).top + k.layoutTop;
 			const bottom = top + k.h;
 			const firstTop = v.documentTop + v.lineBlockAt(v.viewport.from).top;
 			if (bottom <= firstTop + 1 || top >= s.bottom) continue;
-			const el = lineEl(v, img.from);
-			const drawn = !!el?.querySelector('.image-embed');
+			const drawn = !!embedEl(v, img.from);
 			// Text that overlaps the image area (plus its gap, less 1px) means the wrap is lost.
 			const xFrom = c.left + k.left - (k.side === 'right' ? k.gap : 0) + 1;
 			const xTo = c.left + k.right + (k.side === 'left' ? k.gap : 0) - 1;
@@ -179,6 +201,7 @@ function installHelpers() {
 			const visibleTop = Math.round(top - s.top);
 			out.push({
 				n: img.n,
+				from: img.from,
 				drawn,
 				inWindow: bottom > s.top,
 				intrude,
@@ -261,7 +284,7 @@ function installHelpers() {
 		await sleep(ms);
 	};
 
-	window.__lp = { view, frames, sleep, images, calibrate, snapshot, compare, imageStatus, heightDrift, measureStep, scan, jumpTo, settle, cal, lineEl, counted };
+	window.__lp = { view, frames, sleep, images, calibrate, snapshot, compare, imageStatus, heightDrift, measureStep, scan, jumpTo, settle, cal, lineEl, embedEl, counted };
 }
 
 /** Totals for a pass: an array of steps, or a scan's { steps, dispatches }. */
@@ -322,13 +345,51 @@ function stressNote() {
 	].join('\n');
 }
 
+const LINES_NOTE = 'Stand-in lines.md';
+
+/** "L12" for a picture alone on line 12, "L12+30" for one 30 characters into it. */
+const label = (img) => (img.from === img.lineFrom ? `L${img.n}` : `L${img.n}+${img.from - img.lineFrom}`);
+
+/**
+ * Tall pictures that do not have a line of their own: two on one line (one each side, so the text runs
+ * between them), and one inside a sentence, on the right and on the left.
+ */
+function linesNote() {
+	const filler = (n, from = 1) =>
+		Array.from(
+			{ length: n },
+			(_, i) =>
+				`Paragraph ${i + from}. The ferry runs twice a week in winter, and the post arrives in a single canvas bag that smells faintly of diesel.`,
+		).join('\n\n');
+	return [
+		'# Stand-in lines',
+		'',
+		filler(14),
+		'',
+		'![[tall.png|wrap-left|300]] ![[square.png|wrap-right|120]]',
+		filler(8, 15),
+		'',
+		filler(14, 23),
+		'',
+		'Inside a sentence: the harbour wall ![[tall.png|wrap-right|300]] was rebuilt three times in the last century, each time a little higher than the storm before it, and the bakery near the church is sold out of bread by ten.',
+		filler(8, 37),
+		'',
+		filler(14, 45),
+		'',
+		'A sentence that holds ![[tall.png|wrap-left|280]] a picture on the left, with the rest of the words flowing around it.',
+		filler(8, 59),
+		'',
+		filler(16, 67),
+	].join('\n');
+}
+
 export default async ({ page, openNote, setNote, setWindowSize, watchErrors, args }) => {
 	const disabled = args.includes('--disabled');
 	const outIdx = args.indexOf('--out');
 	const outFile = outIdx >= 0 ? args[outIdx + 1] : null;
 	const passIdx = args.indexOf('--passes');
 	const passes = (passIdx >= 0 ? args[passIdx + 1] : 'slow,fast,jump').split(',');
-	const note = args.includes('--stress') ? STRESS_NOTE : 'Fixture.md';
+	const note = args.includes('--stress') ? STRESS_NOTE : args.includes('--lines') ? LINES_NOTE : 'Fixture.md';
 
 	const errors = watchErrors(page);
 	// CodeMirror's own warnings when its measure cycle does not settle, by the phase they came in.
@@ -346,6 +407,7 @@ export default async ({ page, openNote, setNote, setWindowSize, watchErrors, arg
 
 	await setWindowSize(page, 1280, 900);
 	if (note === STRESS_NOTE) await setNote(page, STRESS_NOTE, stressNote());
+	if (note === LINES_NOTE) await setNote(page, LINES_NOTE, linesNote());
 	// disablePluginAndSave is what the Settings toggle does. disablePlugin() alone unloads the code but
 	// leaves styles.css applied (the plugin stays in enabledPlugins), so it is not a clean control.
 	if (disabled) await page.evaluate(() => window.app.plugins.disablePluginAndSave('image-text-wrap'));
@@ -408,12 +470,12 @@ export default async ({ page, openNote, setNote, setWindowSize, watchErrors, arg
 						await __lp.settle(300);
 					}
 					const k = __lp.cal.get(imgFrom);
-					__lp.jumpTo(v.lineBlockAt(imgFrom).top + k.layoutTop + k.h * frac);
+					__lp.jumpTo(v.lineBlockAt(k.lineFrom).top + k.layoutTop + k.h * frac);
 					await __lp.frames(2);
 					await __lp.sleep(30);
-					const atJump = __lp.imageStatus().filter((i) => i.n === k.n);
+					const atJump = __lp.imageStatus().filter((i) => i.from === k.from);
 					await __lp.settle(500);
-					const settled = __lp.imageStatus().filter((i) => i.n === k.n);
+					const settled = __lp.imageStatus().filter((i) => i.from === k.from);
 					const steps = [];
 					for (const dir of [-1, 1, 1]) {
 						for (let i = 0; i < 10; i++) {
@@ -432,7 +494,7 @@ export default async ({ page, openNote, setNote, setWindowSize, watchErrors, arg
 		const record = (img, start, frac, r) => {
 			const s = summarize(r.steps);
 			return {
-				image: img.n,
+				image: label(img),
 				from: start,
 				frac,
 				atJump: r.atJump,
@@ -469,7 +531,7 @@ export default async ({ page, openNote, setNote, setWindowSize, watchErrors, arg
 				const c = __lp.cal.get(imgFrom);
 				v.scrollDOM.scrollTop = 0;
 				await __lp.settle(300);
-				const target = v.lineBlockAtHeight(v.lineBlockAt(imgFrom).top + c.layoutTop + c.h * 0.9);
+				const target = v.lineBlockAtHeight(v.lineBlockAt(c.lineFrom).top + c.layoutTop + c.h * 0.9);
 				const targetTop = () => {
 					const el = __lp.lineEl(v, target.from);
 					return el ? Math.round(el.getBoundingClientRect().top - v.scrollDOM.getBoundingClientRect().top) : null;
@@ -477,12 +539,12 @@ export default async ({ page, openNote, setNote, setWindowSize, watchErrors, arg
 				v.dispatch({ effects: v.constructor.scrollIntoView(target.from, { y: 'start' }) });
 				await __lp.frames(2);
 				await __lp.sleep(30);
-				const atJump = __lp.imageStatus().filter((i) => i.n === c.n);
+				const atJump = __lp.imageStatus().filter((i) => i.from === c.from);
 				await __lp.settle(500);
-				const settled = __lp.imageStatus().filter((i) => i.n === c.n);
+				const settled = __lp.imageStatus().filter((i) => i.from === c.from);
 				return { atJump, settled, target: v.state.doc.lineAt(target.from).number, targetTop: targetTop() };
 			}, img.from);
-			viaEffect.push({ image: img.n, from: 'scrollIntoView', frac: 0.9, ...r });
+			viaEffect.push({ image: label(img), from: 'scrollIntoView', frac: 0.9, ...r });
 		}
 		result.passes.jumpViaScrollIntoView = viaEffect;
 	}
@@ -495,7 +557,7 @@ export default async ({ page, openNote, setNote, setWindowSize, watchErrors, arg
 
 	// Short summary on stdout.
 	const lines = [`${note}, plugin ${disabled ? 'disabled' : 'enabled'}`];
-	lines.push(`images: ${calibration.map((c) => `L${c.n} ${c.side} ${Math.round(c.w)}x${Math.round(c.h)} float:${c.float}`).join('; ')}`);
+	lines.push(`images: ${calibration.map((c) => `${label(c)} ${c.side} ${Math.round(c.w)}x${Math.round(c.h)} float:${c.float}`).join('; ')}`);
 	for (const [name, p] of Object.entries(result.passes)) {
 		if (Array.isArray(p)) {
 			for (const j of p) {
@@ -503,7 +565,7 @@ export default async ({ page, openNote, setNote, setWindowSize, watchErrors, arg
 				const settled = (j.settled ?? []).map((i) => `${i.drawn ? 'drawn' : i.standIn ? 'stand-in' : 'UNDRAWN'} lost:${i.intrudeVisible}`).join(',');
 				const after = j.after ? ` | then 30 steps: jumps ${j.after.jumps} max ${j.after.maxJump}px, lost-wrap steps ${j.after.lostWrapSteps}` : '';
 				const target = j.target ? ` | target L${j.target} at ${j.targetTop}px from the top` : '';
-				lines.push(`${name} L${j.image} ${j.from} ${j.frac}: at jump ${at}; settled ${settled}${after}${target}`);
+				lines.push(`${name} ${j.image} ${j.from} ${j.frac}: at jump ${at}; settled ${settled}${after}${target}`);
 			}
 		} else {
 			lines.push(

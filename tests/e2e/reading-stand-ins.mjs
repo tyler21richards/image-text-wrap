@@ -63,7 +63,9 @@ export default async ({ page, args, setNote, openNote, setWindowSize, watchError
 				if (Math.abs(worst) > 2) jumps.push({ at: start, px: Math.round(worst * 10) / 10 });
 				const shown = [...sizer.querySelectorAll('.itw-rv-stand-in')].find((s) => getComputedStyle(s).display !== 'none');
 				if (shown && !shownBefore) {
-					const copy = shown.querySelector('img').getBoundingClientRect();
+					// The copy is a background the size of the picture (an img would show in Obsidian's image viewer).
+					const picture = shown.querySelector('.itw-rv-stand-in-picture');
+					const copy = picture.getBoundingClientRect();
 					const copyDocTop = copy.top - scroller.getBoundingClientRect().top + scroller.scrollTop;
 					const box = shown.getBoundingClientRect();
 					swaps.push({
@@ -71,6 +73,7 @@ export default async ({ page, args, setNote, openNote, setWindowSize, watchError
 						imageSectionInPage: embed.isConnected,
 						copyTopVsImageTop: Math.round((copyDocTop - docTop) * 10) / 10,
 						copySize: [Math.round(copy.width), Math.round(copy.height)],
+						copyImage: getComputedStyle(picture).backgroundImage.startsWith('url('),
 						visiblePartOnScreen: Math.round(box.bottom - scroller.getBoundingClientRect().top),
 					});
 				}

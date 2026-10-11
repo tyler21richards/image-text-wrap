@@ -313,8 +313,8 @@ p > img:is([alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt
  * Stand-ins (src/reading/stand-ins.ts): hidden copies of a wrapped image, cut to the part below the top
  * of each section the image reaches. Reading view keeps only the sections near the screen in the page,
  * after a "pusher" element that holds the space of those above. Only the first section in the page shows
- * its stand-ins: exactly when the sections above it, the image's own among them, are gone. A section that
- * keeps floats to itself (a table) passes that on to the next one.
+ * its stand-ins: exactly when the sections above it, the image's own among them, are gone. The copy is a
+ * background, so Obsidian's image viewer, which shows every img of the note, does not show it.
  */
 .itw-rv-stand-in {
 	display: none;
@@ -336,16 +336,29 @@ p > img:is([alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt
 	clear: right;
 	margin-left: var(--itw-stand-in-gap, 0px);
 }
-.itw-rv-stand-in > img {
-	display: block;
+.itw-rv-stand-in-picture {
 	width: 100%;
-	max-width: none;
-	height: auto;
+	height: var(--itw-stand-in-picture-height, 0px);
 	margin-top: calc(-1 * var(--itw-stand-in-offset, 0px));
+	background-image: var(--itw-stand-in-image, none);
+	background-size: 100% 100%;
+	background-repeat: no-repeat;
 }
 .markdown-preview-pusher + .itw-host > .itw-rv-stand-in,
-.markdown-preview-pusher + .itw-host-skip + .itw-host > .itw-rv-stand-in {
+.markdown-preview-pusher + .itw-host-skip + .itw-host > .itw-rv-stand-in,
+.markdown-preview-pusher + .itw-host-skip + .itw-host-skip + .itw-host > .itw-rv-stand-in {
 	display: block;
+}
+
+/*
+ * A section that keeps floats to itself (a table) holds no stand-in: beside a float it is narrowed as a
+ * whole. First in the page (one or two such sections in a row), it is narrowed as much as the floats
+ * beside it did, and the next section shows its stand-ins.
+ */
+.markdown-preview-pusher + .itw-host-skip,
+.markdown-preview-pusher + .itw-host-skip + .itw-host-skip {
+	margin-left: var(--itw-skip-left, 0px);
+	margin-right: var(--itw-skip-right, 0px);
 }
 
 /* ---------- Toolbar ---------- */

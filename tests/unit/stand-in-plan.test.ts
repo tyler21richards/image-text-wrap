@@ -5,16 +5,22 @@ import {
 	docAnchors,
 	editKeepsAnchors,
 	estimateBox,
+	estimateTextHeight,
 	findFloatAnchors,
 	moveAnchors,
 	type DocAnchor,
 	linkSize,
 	parseSize,
 	planStandIn,
+	rowsBefore,
 	sameBox,
 	stackStandIns,
 	standInAnchorTop,
+	visibleLength,
+	withoutRanges,
 	type FloatBox,
+	type LineSample,
+	type TextMetrics,
 } from '../../src/live-preview/stand-in-plan.ts';
 
 const box = (over: Partial<FloatBox> = {}): FloatBox => ({
@@ -112,31 +118,53 @@ test('sizes written in links', () => {
 	assert.equal(parseSize(undefined), null);
 });
 
-test('anchors: only body-text lines holding nothing but one image wrapped left or right', () => {
+test('anchors: images wrapped left or right in body-text paragraphs', () => {
 	const lines = [
 		'# Title', // 0
-		'![[a.png|wrap-left|300]]', // 1 yes
+		'![[a.png|wrap-left|300]]', // 1 yes, alone
 		'Text beside it.', // 2
 		'', // 3
-		'![[b.png|A caption|wrap-right|gap-24|260]]', // 4 yes
+		'![[b.png|A caption|wrap-right|gap-24|260]]', // 4 yes, alone
 		'- ![[c.png|wrap-left]]', // 5 list: no
 		'> ![[d.png|wrap-left]]', // 6 quote: no
-		'![[e.png|wrap-block|300]]', // 7 top and bottom: no
-		'![[f.png|wrap-left]] and text', // 8 text on the line: no
-		'```', // 9
-		'![[g.png|wrap-left]]', // 10 code: no
-		'```', // 11
-		'![teal|wrap-right|120](data:image/png;base64,AAAA)', // 12 yes
-		'| ![[h.png\\|wrap-left]] |', // 13 table-ish: no
+		'', // 7
+		'![[e.png|wrap-block|300]]', // 8 top and bottom: no
+		'', // 9
+		'```', // 10
+		'![[g.png|wrap-left]]', // 11 code: no
+		'```', // 12
+		'![teal|wrap-right|120](data:image/png;base64,AAAA)', // 13 yes, alone
+		'| ![[h.png\\|wrap-left]] |', // 14 table-ish: no
+		'', // 15
+		'![[f.png|wrap-left]] and text', // 16 yes, inside a sentence
+		'', // 17
+		'![[i.png|wrap-left|100]] ![[j.png|wrap-right|100]]', // 18 two, alone: a line of wrapped images only
+		'', // 19
+		'Words ![[k.png|wrap-right|100]] more words ![[l.png|wrap-left|90]] end.', // 20 two inside a sentence
+		'', // 21
+		'![[m.png|wrap-left|100]] ![[n.png|wrap-block|100]]', // 22 one: the line has an image in line too
+		'', // 23
+		'# A ![[o.png|wrap-left]] heading', // 24 heading: no
 	];
 	const anchors = findFloatAnchors(lines);
 	assert.deepEqual(
-		anchors.map((a) => [a.line, a.side, a.gap]),
+		anchors.map((a) => [a.line, a.side, a.gap, a.alone]),
 		[
-			[1, 'left', 16],
-			[4, 'right', 24],
-			[12, 'right', 16],
+			[1, 'left', 16, true],
+			[4, 'right', 24, true],
+			[13, 'right', 16, true],
+			[16, 'left', 16, false],
+			[18, 'left', 16, true],
+			[18, 'right', 16, true],
+			[20, 'right', 16, false],
+			[20, 'left', 16, false],
+			[22, 'left', 16, false],
 		],
+	);
+	// Each one at its own link.
+	assert.deepEqual(
+		anchors.filter((a) => a.line === 20).map((a) => lines[20]!.slice(a.linkFrom, a.linkTo)),
+		['![[k.png|wrap-right|100]]', '![[l.png|wrap-left|90]]'],
 	);
 	assert.equal(anchors[1]!.raw, '![[b.png|A caption|wrap-right|gap-24|260]]');
 	assert.deepEqual(linkSize(anchors[1]!.link), { width: 260 });
@@ -185,7 +213,7 @@ test('an edit that may end a table, or stop ending one, scans the note again', (
 });
 
 const doc = (lines: string[]) => Text.of(lines);
-const fields = (anchors: readonly DocAnchor[]) => anchors.map((a) => [a.line, a.lineFrom, a.lineTo, a.pos, a.raw, a.side, a.gap]);
+const fields = (anchors: readonly DocAnchor[]) => anchors.map((a) => [a.line, a.lineFrom, a.lineTo, a.pos, a.raw, a.side, a.gap, a.alone]);
 
 test('anchors move with an edit in ordinary text and are found again otherwise', () => {
 	const before = doc(['# Title', '', 'Intro text.', '', '![[a.png|wrap-left|300]]', 'Beside it.', '', 'More text.', '', '![b|wrap-right](b.png)', 'End.']);
@@ -252,6 +280,11 @@ test('whenever anchors are moved rather than found again, they are what a new sc
 		'Plain paragraph one.',
 		'Plain paragraph two.',
 		'',
+		'Text with ![[g.png|wrap-left|50]] inside a sentence.',
+		'',
+		'![[h.png|wrap-left|40]] ![[i.png|wrap-right|40]]',
+		'Text beside two pictures.',
+		'',
 		...Array.from({ length: 12 }, (_, i) => [`Filler paragraph ${i + 1}, with a few ordinary words in it.`, '']).flat(),
 		'$$',
 		'x',
@@ -282,4 +315,57 @@ test('whenever anchors are moved rather than found again, they are what a new sc
 	}
 	// Ordinary typing takes the shortcut.
 	assert.ok(moved > 1000, `moved ${moved}`);
+});
+
+const sample = (text: string | null, mapHeight = 80, floats = false): LineSample => ({ text, mapHeight, floats });
+const metrics: TextMetrics = { lineWidth: 700, lineInset: 0, charWidth: 7.3125, lineHeight: 24 };
+/** A 788px picture 350px wide on the right, with a 16px gap: text beside it has 334px. */
+const tall = box({ width: 350, height: 788, marginBottom: 8 });
+const paragraph = 'x'.repeat(307);
+
+test('a picture never drawn: the text below its line is counted as drawn beside it, not as the height map guesses', () => {
+	// Measured on the stress note: three paragraphs of 307 characters, each 7 rows of 24px beside the
+	// picture (the height map guessed 80px), and three blank lines: 576px.
+	const blocks = [paragraph, '', paragraph, '', paragraph, ''].map((t) => sample(t));
+	assert.equal(estimateTextHeight(blocks, tall, metrics), 576);
+	// Past the picture's bottom (108px), rows have the full width: 5 narrow rows and one full one, then
+	// 4 full rows instead of 7.
+	const short = box({ width: 350, height: 100, marginBottom: 8 });
+	assert.equal(estimateTextHeight([sample(paragraph), sample(paragraph)], short, metrics), (5 + 1) * 24 + 4 * 24);
+});
+
+test('estimate: lines of wrapped images take no height; what cannot be counted keeps the height map height', () => {
+	assert.equal(estimateTextHeight([sample('![[a.png|wrap-left]]', 100, true), sample('Short.')], tall, metrics), 24);
+	// A heading, a list item, a line with a pipe or an image, and a block of several lines (a table).
+	for (const text of ['# Heading', '- item', 'a | b', 'An ![[inline.png]] image', null]) {
+		assert.equal(estimateTextHeight([sample(text, 37)], tall, metrics), 37, String(text));
+	}
+	// Plain lines right after a list item continue it, up to the next blank line.
+	assert.equal(estimateTextHeight([sample('- item', 30), sample('lazy', 50), sample(''), sample('Plain.')], tall, metrics), 30 + 50 + 24 + 24);
+	// After a fence nothing is counted any more: code, math or a comment follows.
+	assert.equal(estimateTextHeight([sample('```', 20), sample('code', 21), sample('', 22)], tall, metrics), 63);
+});
+
+test('estimate: links are counted by the text Live Preview shows, and counting stops past the limit', () => {
+	assert.equal(visibleLength('See [[Some note|the note]] and [[Other]] or [a link](https://example.com/x).'), 'See the note and Other or a link.'.length);
+	assert.equal(visibleLength('**Bold** and ==marked== and `code`'), 'Bold and marked and code'.length);
+	const many = Array.from({ length: 100 }, () => sample(paragraph));
+	assert.ok(estimateTextHeight(many, tall, metrics, 796) < 796 + 7 * 24);
+});
+
+test('estimate: a picture inside a sentence starts on the row of its link, and the rows above it are full width', () => {
+	assert.equal(rowsBefore('', metrics), 0);
+	// 100 characters take 731px: more than one row of 700px, so the picture starts on the second row.
+	assert.equal(rowsBefore('y'.repeat(100), metrics), 24);
+	const line = 'Words ![[k.png|wrap-right]] more ![[l.png|wrap-left]] end.';
+	assert.equal(
+		withoutRanges(line, [
+			{ from: 33, to: 53 },
+			{ from: 6, to: 27 },
+		]),
+		'Words  more  end.',
+	);
+	// Its own line holds 307 characters: one full row above the picture (700px), then narrow rows.
+	const inLine = { ...tall, layoutTop: 24 };
+	assert.equal(estimateTextHeight([sample(paragraph)], inLine, metrics, Infinity, 24), 24 + 5 * 24);
 });

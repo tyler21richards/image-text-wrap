@@ -25,6 +25,14 @@
 // - A stand-in update that follows a scroll request (jump to a line or heading, going back in
 //   history) carries the request again, or the target ends up away from where it was asked to be.
 // - Only links Obsidian's own parser reads as images get a stand-in; it draws no picture for others.
+// - A picture inside a folded section is not drawn, so it gets no stand-in either (its copy showed
+//   over the section after the fold).
+// - Every wrapped picture gets one: alone on its line, on a line of several, or inside a sentence
+//   (without, text beside such a picture jumped by up to 192px while scrolling).
+// - A picture never drawn in this editor is placed from the lines between it and the first drawn
+//   line, counted as they will be drawn beside it (stand-in-plan.ts, estimateTextHeight): CodeMirror's
+//   guesses for them put the copy 164px too low beside a 788px picture, and the text jumped by 72px
+//   when the picture was drawn.
 import { syntaxTree, syntaxTreeAvailable } from '@codemirror/language';
 import {
 	StateEffect,
@@ -41,16 +49,21 @@ import type ImageTextWrapPlugin from '../main';
 import {
 	docAnchors,
 	estimateBox,
+	estimateTextHeight,
 	linkSize,
 	moveAnchors,
 	planStandIn,
+	rowsBefore,
 	sameBox,
 	stackStandIns,
 	standInAnchorTop,
 	type DocAnchor,
 	type FloatBox,
 	type FloatSide,
+	type LineSample,
 	type StandInPlan,
+	type TextMetrics,
+	withoutRanges,
 } from './stand-in-plan';
 
 export const STAND_IN_CLASS = 'itw-stand-in';
@@ -58,9 +71,12 @@ export const STAND_IN_CLASS = 'itw-stand-in';
 /** Stand-in updates sent within one frame before the next waits for the following frame. */
 const MAX_SENDS_PER_FRAME = 3;
 
+/** Height-map distance (px), beyond twice its height, past which a picture never drawn is not counted. */
+const FAR_ABOVE = 1000;
+
 const anchorCache = new WeakMap<Text, DocAnchor[]>();
 
-/** The wrapped image lines of a document, found once per document version. */
+/** The wrapped images of a document, found once per document version. */
 function anchorsOf(doc: Text): DocAnchor[] {
 	let anchors = anchorCache.get(doc);
 	if (!anchors) {
@@ -68,6 +84,24 @@ function anchorsOf(doc: Text): DocAnchor[] {
 		anchorCache.set(doc, anchors);
 	}
 	return anchors;
+}
+
+const lineCache = new WeakMap<readonly DocAnchor[], Map<number, DocAnchor[]>>();
+
+/** The wrapped images of a document by the start of their line. */
+function anchorsByLine(doc: Text): Map<number, DocAnchor[]> {
+	const anchors = anchorsOf(doc);
+	let byLine = lineCache.get(anchors);
+	if (!byLine) {
+		byLine = new Map();
+		for (const anchor of anchors) {
+			const line = byLine.get(anchor.lineFrom);
+			if (line) line.push(anchor);
+			else byLine.set(anchor.lineFrom, [anchor]);
+		}
+		lineCache.set(anchors, byLine);
+	}
+	return byLine;
 }
 
 /**
@@ -691,6 +725,47 @@ class StandInGuard {
 		}
 	}
 
+	private textMetrics(side: FloatSide, metrics: LineMetrics): TextMetrics {
+		return {
+			lineWidth: metrics.width,
+			lineInset: side === 'left' ? metrics.insetLeft : metrics.insetRight,
+			charWidth: this.view.defaultCharacterWidth,
+			lineHeight: this.view.defaultLineHeight,
+		};
+	}
+
+	/** The text of `anchor`'s line without its wrapped pictures, up to `upTo` (an offset in the line). */
+	private lineText(anchor: DocAnchor, upTo?: number): string {
+		const doc = this.view.state.doc;
+		const text = doc.sliceString(anchor.lineFrom, anchor.lineTo);
+		const links = (anchorsByLine(doc).get(anchor.lineFrom) ?? []).map((a) => ({ from: a.linkFrom, to: a.linkTo }));
+		return withoutRanges(upTo === undefined ? text : text.slice(0, upTo), links);
+	}
+
+	/**
+	 * How far above the line at `to` the top of `anchor`'s line is, for a picture never drawn here
+	 * (estimateTextHeight): the lines between are counted as they will be drawn beside it, and so is
+	 * the picture's own line when it holds text too.
+	 */
+	private textBetween(anchor: DocAnchor, to: number, box: FloatBox, metrics: LineMetrics): number {
+		const view = this.view;
+		const doc = view.state.doc;
+		const byLine = anchorsByLine(doc);
+		const own = anchor.alone ? null : this.lineText(anchor);
+		function* blocks(): Generator<LineSample> {
+			if (own !== null) yield { text: own, mapHeight: view.lineBlockAt(anchor.lineFrom).height, floats: false };
+			for (let pos = anchor.lineTo + 1; pos < to; ) {
+				const block = view.lineBlockAt(pos);
+				const line = doc.lineAt(pos);
+				const single = block.from === line.from && block.to === line.to;
+				yield { text: single ? line.text : null, mapHeight: block.height, floats: single && !!byLine.get(line.from)?.[0]?.alone };
+				pos = block.to + 1;
+			}
+		}
+		const limit = box.layoutTop + box.height + box.marginBottom;
+		return estimateTextHeight(blocks(), box, this.textMetrics(box.side, metrics), limit, anchor.alone ? 0 : box.layoutTop);
+	}
+
 	/** The stand-in in front of the first drawn line (at `at`, height-map top `lineTop`), if any. */
 	private standInsBefore(at: number, lineTop: number): Range<Decoration> | null {
 		const view = this.view;
@@ -700,19 +775,47 @@ class StandInGuard {
 		const planned: Array<{ anchor: DocAnchor; box: FloatBox; src: string; plan: StandInPlan }> = [];
 		// Pictures CodeMirror draws apart, on the cursor's line, start before any stand-in.
 		let floor = 0;
+		// Estimated pictures on one line of several: same-side ones stack, as CSS stacks them.
+		let stackLine = -1;
+		const stack: Record<FloatSide, number> = { left: 0, right: 0 };
 		for (const anchor of anchorsOf(doc)) {
 			if (anchor.lineFrom >= viewportFrom) break;
+			// Inside a folded section (or anything else drawn as one block over several lines) the
+			// picture is not drawn, so neither is its copy.
+			const block = view.lineBlockAt(anchor.lineFrom);
+			if (block.from !== anchor.lineFrom || block.to !== anchor.lineTo) continue;
 			if (!drawnAsImage(view.state, anchor.pos)) continue;
-			const float = this.floatFor(anchor);
+			let float = this.floatFor(anchor);
 			if (!float) continue;
-			const anchorTop = view.lineBlockAt(anchor.lineFrom).top;
+			const anchorTop = block.top;
 			if (onSelectionLine(view, anchor.lineFrom, anchor.lineTo)) {
 				floor = Math.max(floor, anchorTop + float.box.layoutTop - float.box.marginTop - lineTop);
 				continue;
 			}
 			const { refPos } = float.box;
-			const refTop = refPos !== undefined && refPos <= doc.length ? view.lineBlockAt(refPos).top : null;
-			const plan = planStandIn(standInAnchorTop(float.box, anchorTop, refTop), float.box, lineTop);
+			let top: number;
+			if (float.box.refOffset === undefined && this.metrics) {
+				// Never drawn here: placed from the line in front of which it goes, not from the height map.
+				// A picture inside a sentence starts on the row of text its link is on. Lines are drawn about
+				// as tall as the height map guesses or taller, image lines aside, so one far above is skipped
+				// without counting the lines between.
+				if (lineTop - anchorTop > 2 * (float.box.height + float.box.marginBottom) + FAR_ABOVE) continue;
+				if (stackLine !== anchor.lineFrom) {
+					stackLine = anchor.lineFrom;
+					stack.left = stack.right = 0;
+				}
+				const layoutTop = anchor.alone
+					? stack[float.box.side]
+					: rowsBefore(this.lineText(anchor, anchor.linkFrom), this.textMetrics(float.box.side, this.metrics));
+				const box = { ...float.box, layoutTop };
+				stack[box.side] = layoutTop + box.height + box.marginBottom;
+				float = { ...float, box };
+				top = lineTop - this.textBetween(anchor, at, box, this.metrics);
+			} else {
+				const refTop = refPos !== undefined && refPos <= doc.length ? view.lineBlockAt(refPos).top : null;
+				top = standInAnchorTop(float.box, anchorTop, refTop);
+			}
+			const plan = planStandIn(top, float.box, lineTop);
 			if (plan) planned.push({ anchor, ...float, plan });
 		}
 		if (planned.length === 0) return null;
