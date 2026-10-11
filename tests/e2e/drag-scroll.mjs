@@ -198,7 +198,8 @@ export default async (h) => {
 		await d.scrollToLine(page, LANDSCAPE - 1, 40);
 		const g = await d.geometry(page, LANDSCAPE);
 		const st0 = await d.scrollTop(page);
-		const before = await d.embedOf(page, '![[landscape.png');
+		// The note has a second landscape.png (top and bottom): tell them apart by the wrap token.
+		const before = await d.embedOf(page, '![[landscape.png|wrap-left');
 		// Hold in the bottom band until the note has scrolled a long way, then drop in the middle of the editor.
 		await d.pressAndMove(page, centre(before), { x: g.column.right - 60, y: g.scroller.bottom - 6 }, 8);
 		for (let i = 0; i < 80 && (await d.scrollTop(page)) < st0 + 2500; i++) await d.sleep(100);
@@ -210,19 +211,20 @@ export default async (h) => {
 		await settle();
 		await page.screenshot({ path: `${out}/scroll-far-drop.png` });
 		const st1 = await d.scrollTop(page);
-		const dropped = await d.embedOf(page, '![[landscape.png');
+		const landed = during.label === 'Wrap left' ? '![[landscape.png|wrap-left' : '![[landscape.png|wrap-right';
+		const dropped = await d.embedOf(page, landed);
 		const moved = (await d.noteText(page)) !== d.fixtureText();
 		// Undo: the image is back where it was, on screen, as before the press.
 		await page.keyboard.press('Meta+z');
 		await settle();
 		await page.screenshot({ path: `${out}/scroll-far-undo.png` });
-		const undone = await d.embedOf(page, '![[landscape.png');
+		const undone = await d.embedOf(page, '![[landscape.png|wrap-left');
 		const st2 = await d.scrollTop(page);
 		const restored = (await d.noteText(page)) === d.fixtureText();
 		// Redo: back to where it landed, on screen.
 		await page.keyboard.press('Meta+Shift+z');
 		await settle();
-		const redone = await d.embedOf(page, '![[landscape.png');
+		const redone = await d.embedOf(page, landed);
 		const st3 = await d.scrollTop(page);
 		await d.resetNote(page, null);
 		return {
