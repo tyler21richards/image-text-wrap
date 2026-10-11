@@ -1,6 +1,6 @@
 {
 	"name": "image-text-wrap",
-	"version": "1.1.0",
+	"version": "1.1.1",
 	"description": "Word-style text wrapping for images in Obsidian: a picture toolbar, drag to move, and matching output in Live Preview, Reading view and PDF.",
 	"main": "main.js",
 	"type": "module",
