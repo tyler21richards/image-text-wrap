@@ -216,7 +216,11 @@ class ToolbarView implements PluginValue, ToolbarHost {
 		}
 	}
 
-	/** Follows the picture's size, so the toolbar keeps up while Obsidian's resize corner is dragged. */
+	/**
+	 * Follows the picture's size, so the toolbar keeps up while Obsidian's resize corner is dragged, and the
+	 * editor's, so it keeps up while a sidebar opening or closing slides the note column across. CodeMirror
+	 * measures such a slide only every 50 ms or so, which left the toolbar behind for several frames.
+	 */
 	private watch(embed: HTMLElement | null): void {
 		if (embed === this.watched) return;
 		this.resizes?.disconnect();
@@ -225,9 +229,19 @@ class ToolbarView implements PluginValue, ToolbarHost {
 		if (!embed) return;
 		// The observer of the image's own window, so a pop-out window delivers its notifications.
 		const Observer = (embed.win as Window & { ResizeObserver?: typeof ResizeObserver }).ResizeObserver ?? ResizeObserver;
-		this.resizes = new Observer(this.schedule);
+		this.resizes = new Observer(this.onResize);
 		this.resizes.observe(pictureOf(embed));
+		this.resizes.observe(this.view.scrollDOM);
 	}
+
+	/**
+	 * Places the toolbar at once: resize notifications come after layout and before paint, so the rectangles
+	 * read here are the ones about to be painted, and the toolbar moves in the same frame as the picture.
+	 * The writes only touch the toolbar, which nothing here observes.
+	 */
+	private readonly onResize = (): void => {
+		if (!this.destroyed) this.write(this.read());
+	};
 
 	apply(subject: ToolbarSubject, layout: Layout): void {
 		writeLayout(this.view, subject.from, layout, subject.doc);
@@ -241,8 +255,9 @@ class ToolbarView implements PluginValue, ToolbarHost {
 
 	private readonly onKeyDown = (e: KeyboardEvent): void => {
 		releaseScrollPosition(this.view);
-		// Hide the toolbar, but let Esc reach Obsidian and CodeMirror as usual.
-		if (e.key === 'Escape' && this.shownOn) this.dismiss();
+		// Hide the toolbar, but let Esc reach Obsidian and CodeMirror as usual. An Esc that closes a menu
+		// (the Spacing dropdown, the image's right-click menu) only does that.
+		if (e.key === 'Escape' && this.shownOn && !this.shownOn.keyAlreadyUsed(e)) this.dismiss();
 	};
 
 	private readonly onPointerDown = (): void => {

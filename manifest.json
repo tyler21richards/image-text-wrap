@@ -2,7 +2,7 @@
 	"id": "image-text-wrap",
 	"name": "Image Text Wrap",
 	"version": "0.1.0",
-	"minAppVersion": "1.13.0",
+	"minAppVersion": "1.13.1",
 	"description": "Wrap text around images like in Word. Pick a layout from a toolbar on the selected image, and drag images to move them.",
 	"author": "Claude",
 	"isDesktopOnly": true

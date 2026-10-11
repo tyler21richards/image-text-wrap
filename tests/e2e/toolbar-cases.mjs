@@ -1,33 +1,56 @@
 // M2 acceptance, part 2 (Fixture.md): the same image twice, writes deep in the note, the native corner
 // resize, remote, table and transcluded images, leaf changes and the "show toolbar" setting.
 //   node scripts/obsidian.mjs run tests/e2e/toolbar-cases.mjs
+// What it changes (the note, the "show toolbar" setting, a second pane) is put back also when a run stops
+// early.
 import {
 	clickButton,
 	clickText,
 	closeLightbox,
 	diffLines,
+	drawn,
 	freshNote,
 	geometryProblems,
-	imageRect,
 	pressed,
 	probe,
+	scrollToLink,
 	showImage,
 	sleep,
 	sourceNote,
 	state,
+	waitFor,
+	waitForImage,
 } from './toolbar-helpers.mjs';
 
 const NOTE = 'Fixture.md';
+const PLUGIN = 'image-text-wrap';
 
-export default probe(async (h, check) => {
+/** The centre of the first picture matching `selector`, once one is drawn (null if none is in time). */
+const pictureIn = (page, selector) =>
+	waitFor(() =>
+		page.evaluate((selector) => {
+			const r = document.querySelector(selector)?.getBoundingClientRect();
+			return r && r.width > 0 ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null;
+		}, selector),
+	);
+
+/** Scrolls the picture of `needle` into view and returns its rectangle once drawn; throws if it is not. */
+const pictureOf = async (page, needle) => drawn(await showImage(page, needle), needle);
+
+export default probe(async (h, check, restore) => {
 	const { page } = h;
 	const errors = h.watchErrors(page);
 	await h.setWindowSize(page, 1280, 900);
 	const original = sourceNote(NOTE);
+	restore(() => h.setNote(page, NOTE, original));
+	restore(() => closeLightbox(page));
+	// A mouse button held down for a drag is let go.
+	let held = false;
+	restore(async () => held && (await page.mouse.up()));
 	await freshNote(page, h, NOTE);
 
 	// The same image embedded twice (lines 48 and 51) changes independently.
-	let img = await showImage(page, '![[square.png|180]]');
+	let img = await pictureOf(page, '![[square.png|180]]');
 	await page.mouse.click(img.x, img.y);
 	await sleep(400);
 	let before = await state(page);
@@ -37,7 +60,7 @@ export default probe(async (h, check) => {
 	let diff = diffLines(before.doc, after.doc);
 	check('same image twice: only the clicked copy changes (wrap right)', diff.length === 1 && diff[0].line === 51 && diff[0].after === '![[square.png|wrap-right|180]]', diff);
 	check('deep in the note: no scrolling', after.scrollTop === before.scrollTop && before.scrollTop > 1000, [before.scrollTop, after.scrollTop]);
-	img = await imageRect(page, '![[square.png|wrap-left|180]]');
+	img = drawn(await waitForImage(page, '![[square.png|wrap-left|180]]'), '![[square.png|wrap-left|180]]');
 	await page.mouse.click(img.x, img.y);
 	await sleep(400);
 	before = await state(page);
@@ -67,7 +90,7 @@ export default probe(async (h, check) => {
 		cm.dispatch({ effects: cm.constructor.scrollIntoView(pos, { y: 'start', yMargin: 60 }) });
 	});
 	await sleep(500);
-	img = await imageRect(page, '![[square.png|wrap-left|180]]');
+	img = drawn(await waitForImage(page, '![[square.png|wrap-left|180]]'), '![[square.png|wrap-left|180]]');
 	await page.mouse.click(img.x, img.y);
 	await sleep(400);
 	before = await state(page);
@@ -97,15 +120,17 @@ export default probe(async (h, check) => {
 
 	// Obsidian's own corner resize keeps the layout tokens, and the toolbar follows the picture.
 	await clickText(page);
-	img = await showImage(page, '![[landscape.png|wrap-left|300]]');
+	img = await pictureOf(page, '![[landscape.png|wrap-left|300]]');
 	await page.mouse.click(img.x, img.y);
 	await sleep(400);
 	before = await state(page);
 	const corner = before.native.find((n) => n.cls.includes('image-resize-corner'));
+	if (!corner) throw new Error(`no resize corner on the selected picture (selected: ${before.selected})`);
 	const cx = (corner.left + corner.right) / 2;
 	const cy = (corner.top + corner.bottom) / 2;
 	await page.mouse.move(cx, cy);
 	await page.mouse.down();
+	held = true;
 	for (let i = 1; i <= 10; i++) {
 		await page.mouse.move(cx - 6 * i, cy - 4 * i);
 		await sleep(30);
@@ -113,6 +138,7 @@ export default probe(async (h, check) => {
 	await sleep(150);
 	const during = await state(page);
 	await page.mouse.up();
+	held = false;
 	await sleep(500);
 	after = await state(page);
 	diff = diffLines(before.doc, after.doc);
@@ -125,10 +151,11 @@ export default probe(async (h, check) => {
 	// Dragging the selected picture: the toolbar is not painted in any frame of the drag, and after Esc
 	// cancels the drag it is back where it was, the picture still selected.
 	await clickText(page);
-	img = await showImage(page, '![[landscape.png|wrap-left|300]]');
+	img = await pictureOf(page, '![[landscape.png|wrap-left|300]]');
 	await page.mouse.click(img.x, img.y);
 	await sleep(400);
 	before = await state(page);
+	restore(() => page.evaluate(() => delete window.__itwFrames));
 	await page.evaluate(() => {
 		// Every animation frame: is the drag on, and is the toolbar painted?
 		const frames = (window.__itwFrames = []);
@@ -141,17 +168,19 @@ export default probe(async (h, check) => {
 	});
 	await page.mouse.move(img.x, img.y);
 	await page.mouse.down();
+	held = true;
 	await page.mouse.move(img.x + 8, img.y + 8, { steps: 2 });
 	await page.mouse.move(img.x + 260, img.y + 160, { steps: 14 });
 	await sleep(250);
 	await page.keyboard.press('Escape');
 	await sleep(300);
 	await page.mouse.up();
+	held = false;
 	await sleep(500);
 	after = await state(page);
 	const dragFrames = await page.evaluate(() => {
 		const frames = window.__itwFrames;
-		window.__itwFrames = null;
+		delete window.__itwFrames;
 		return frames;
 	});
 	const whileDragging = dragFrames.filter((f) => f.dragging);
@@ -160,7 +189,7 @@ export default probe(async (h, check) => {
 
 	// Remote (data URI) image: Obsidian selects it the same way, and its link is found by position.
 	await clickText(page);
-	img = await showImage(page, '![teal|wrap-right|120]');
+	img = await pictureOf(page, '![teal|wrap-right|120]');
 	await page.mouse.click(img.x, img.y);
 	await sleep(400);
 	before = await state(page);
@@ -174,12 +203,9 @@ export default probe(async (h, check) => {
 
 	// Images in a table and in a transcluded note get no toolbar.
 	await clickText(page);
-	await showImage(page, '![[square.png\\|60]]');
-	const tableImg = await page.evaluate(() => {
-		const el = document.querySelector('.workspace-leaf.mod-active .cm-content .cm-table-widget .image-embed img');
-		const r = el?.getBoundingClientRect();
-		return r ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null;
-	});
+	// The table's picture is drawn inside Obsidian's table widget, where imageRect does not look.
+	await scrollToLink(page, '![[square.png\\|60]]');
+	const tableImg = await pictureIn(page, '.workspace-leaf.mod-active .cm-content .cm-table-widget .image-embed img');
 	let s;
 	if (tableImg) {
 		const docBefore = (await state(page)).doc;
@@ -198,19 +224,9 @@ export default probe(async (h, check) => {
 		check('image in a table: no toolbar', false, 'table image not on screen');
 	}
 	await clickText(page);
-	const t = await page.evaluate(() => {
-		const cm = app.workspace.activeLeaf.view.editor.cm;
-		const pos = cm.state.doc.toString().indexOf('![[Transcluded source]]');
-		cm.dispatch({ effects: cm.constructor.scrollIntoView(pos, { y: 'center' }) });
-		return pos;
-	});
-	await sleep(500);
-	const tr = await page.evaluate(() => {
-		const el = document.querySelector('.workspace-leaf.mod-active .cm-content .markdown-embed .image-embed img');
-		if (!el) return null;
-		const r = el.getBoundingClientRect();
-		return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-	});
+	await scrollToLink(page, '![[Transcluded source]]');
+	const t = (await state(page)).doc.indexOf('![[Transcluded source]]');
+	const tr = await pictureIn(page, '.workspace-leaf.mod-active .cm-content .markdown-embed .image-embed img');
 	if (tr) {
 		const docBefore = (await state(page)).doc;
 		await page.mouse.click(tr.x, tr.y);
@@ -227,11 +243,17 @@ export default probe(async (h, check) => {
 
 	// Leaf change: open another note beside this one and focus it; come back.
 	await clickText(page);
-	img = await showImage(page, '![[landscape.png|wrap-left|300]]');
+	img = await pictureOf(page, '![[landscape.png|wrap-left|300]]');
 	await page.mouse.click(img.x, img.y);
 	await sleep(400);
 	s = await state(page);
 	const shownBefore = s.visible;
+	restore(() =>
+		page.evaluate(() => {
+			window.__itwOtherLeaf?.detach();
+			delete window.__itwOtherLeaf;
+		}),
+	);
 	await page.evaluate(async () => {
 		const leaf = app.workspace.getLeaf('split');
 		await leaf.openFile(app.vault.getAbstractFileByPath('Plain images.md'));
@@ -244,48 +266,38 @@ export default probe(async (h, check) => {
 	await page.evaluate(() => window.__itwOtherLeaf.detach());
 	await sleep(500);
 
-	// The "Show the picture toolbar" setting, switched off in the real settings window.
+	// The "Show the picture toolbar" setting, switched off through the plugin's settings tab: the same call
+	// its toggle in Obsidian's Settings makes. (Opening the Settings window itself would bring Obsidian to the
+	// front, taking the keyboard from whoever is using the computer.)
 	await clickText(page);
-	img = await showImage(page, '![[landscape.png|wrap-left|300]]');
+	img = await pictureOf(page, '![[landscape.png|wrap-left|300]]');
 	await page.mouse.click(img.x, img.y);
 	await sleep(400);
-	await page.evaluate(() => {
-		app.setting.open();
-		app.setting.openTabById('image-text-wrap');
-	});
-	await sleep(1000);
-	// Obsidian 1.14 opens Settings in a window of its own.
-	let settingsPage = null;
-	for (const ctx of page.context().browser().contexts()) {
-		for (const p of ctx.pages()) {
-			if ((await p.title().catch(() => '')).startsWith('Settings')) settingsPage = p;
-		}
-	}
-	const toggle = settingsPage
-		? await settingsPage.evaluate(() => {
-				const item = [...document.querySelectorAll('.setting-item')].find((i) => i.querySelector('.setting-item-name')?.textContent === 'Show the picture toolbar');
-				const r = item?.querySelector('.checkbox-container')?.getBoundingClientRect();
-				return r ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null;
-			})
-		: null;
-	if (toggle) {
-		await settingsPage.mouse.click(toggle.x, toggle.y);
-		await sleep(400);
-		await page.evaluate(() => app.setting.close());
-		await sleep(800);
-		s = await state(page);
-		const setting = await page.evaluate(() => app.plugins.plugins['image-text-wrap'].settings.showToolbar);
-		check('setting off (clicked in the Settings window): no toolbar on the selected image', setting === false && s.selected && !s.visible, { setting, selected: s.selected, visible: s.visible });
-		await clickText(page);
-		await page.mouse.click(img.x, img.y);
-		await sleep(400);
-		s = await state(page);
-		check('setting off: selecting an image shows nothing', !s.visible && s.selected, { visible: s.visible, selected: s.selected });
-		await page.evaluate(() => app.plugins.plugins['image-text-wrap'].updateSettings({ ...app.plugins.plugins['image-text-wrap'].settings, showToolbar: true }));
-	} else {
-		check('setting off', false, 'settings toggle not found');
-	}
+	const showToolbar = await page.evaluate((id) => app.plugins.plugins[id].settings.showToolbar, PLUGIN);
+	restore(() =>
+		page.evaluate(
+			async ({ id, showToolbar }) => {
+				const plugin = app.plugins.plugins[id];
+				if (plugin.settings.showToolbar !== showToolbar) await plugin.updateSettings({ ...plugin.settings, showToolbar });
+			},
+			{ id: PLUGIN, showToolbar },
+		),
+	);
+	const shownBeforeSetting = (await state(page)).visible;
+	const setting = await page.evaluate(async (id) => {
+		const tab = app.setting.pluginTabs.find((t) => t.id === id);
+		await tab.setControlValue('showToolbar', false);
+		return { saved: app.plugins.plugins[id].settings.showToolbar, shownInSettings: tab.getControlValue('showToolbar') };
+	}, PLUGIN);
+	await sleep(400);
+	s = await state(page);
+	check('setting off: no toolbar on the selected image', shownBeforeSetting && setting.saved === false && setting.shownInSettings === false && s.selected && !s.visible, { shownBeforeSetting, setting, selected: s.selected, visible: s.visible });
+	await clickText(page);
+	await page.mouse.click(img.x, img.y);
+	await sleep(400);
+	s = await state(page);
+	check('setting off: selecting an image shows nothing', !s.visible && s.selected, { visible: s.visible, selected: s.selected });
+	// The setting is switched back by the restore step above.
 
 	check('no console errors', errors.length === 0, errors);
-	await h.setNote(page, NOTE, original);
 });

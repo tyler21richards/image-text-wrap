@@ -1,7 +1,7 @@
 // M2 acceptance, part 5: a pop-out window, light and dark themes, and plugin unload cleanup.
 //   node scripts/obsidian.mjs run tests/e2e/toolbar-popout.mjs
 // Screenshots go to $ITW_STATE_DIR/toolbar-*.png.
-import { clickText, diffLines, freshNote, geometryProblems, imageRect, probe, showImage, sleep, sourceNote, state } from './toolbar-helpers.mjs';
+import { clickText, closeLightbox, diffLines, freshNote, geometryProblems, imageRect, probe, showImage, sleep, sourceNote, state } from './toolbar-helpers.mjs';
 
 const OUT = process.env.ITW_STATE_DIR ?? '.';
 
@@ -28,7 +28,7 @@ function windowState(p) {
 	});
 }
 
-export default probe(async (h, check) => {
+export default probe(async (h, check, restore) => {
 	const { page } = h;
 	const errors = h.watchErrors(page);
 	await h.setWindowSize(page, 1280, 900);
@@ -43,6 +43,14 @@ export default probe(async (h, check) => {
 			return { events: plugin._events.length, children: plugin._children.length };
 		});
 	const ownedBefore = await owned();
+	// A run that stops early closes the pop-out too, so the next probe does not connect to it.
+	restore(() =>
+		page.evaluate(() => {
+			window.__itwPopout?.detach();
+			delete window.__itwPopout;
+			window.dispatchEvent(new Event('focus'));
+		}),
+	);
 	await page.evaluate(async () => {
 		const leaf = app.workspace.openPopoutLeaf({ size: { width: 1000, height: 800 } });
 		await leaf.openFile(app.vault.getAbstractFileByPath('Fixture.md'), { state: { mode: 'source', source: false }, active: true });
@@ -58,7 +66,10 @@ export default probe(async (h, check) => {
 	}
 	check('pop-out window opened as its own page', !!pop, { pages: page.context().pages().length });
 	if (pop) {
-		await pop.bringToFront().catch(() => {});
+		// Focus emulation, as for the main window: the pop-out must not be brought forward, where it would take
+		// the keyboard from whoever is using the computer.
+		const popSession = await pop.context().newCDPSession(pop).catch(() => null);
+		await popSession?.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
 		const target = await pop.evaluate(() => {
 			const cm = [...document.querySelectorAll('.cm-editor')].map((e) => e.cmView?.view ?? null).find(Boolean);
 			const img = [...document.querySelectorAll('.cm-content .internal-embed.image-embed img')].find((i) => {
@@ -109,6 +120,7 @@ export default probe(async (h, check) => {
 
 			// A real right-click in the pop-out: the layout entries are in Obsidian's menu there too.
 			const nativeBefore = await page.evaluate(() => app.vault.getConfig('nativeMenus'));
+			restore(() => page.evaluate((v) => app.vault.setConfig('nativeMenus', v), nativeBefore));
 			await page.evaluate(() => app.vault.setConfig('nativeMenus', false));
 			await pop.mouse.click(target.x - 22, target.y, { button: 'right' });
 			await sleep(500);
@@ -117,7 +129,35 @@ export default probe(async (h, check) => {
 			await sleep(300);
 			await page.evaluate((v) => app.vault.setConfig('nativeMenus', v), nativeBefore);
 			check('pop-out: right-click menu has the layout entries, once', ['In line with text', 'Wrap text left', 'Wrap text right', 'Top and bottom'].every((t) => popMenu.filter((m) => m === t).length === 1), popMenu);
+
+			// Obsidian's image viewer opens in its active window, here the pop-out (Obsidian's own focus handler
+			// makes it the active one): its title shows no layout words there either.
+			await pop.evaluate(() => window.dispatchEvent(new Event('focus')));
+			const popViewer = () =>
+				pop.evaluate(() => {
+					const box = document.querySelector('.lightbox');
+					return box ? { title: box.querySelector('.lightbox-titlebar-text')?.textContent ?? null, alts: [...box.querySelectorAll('.lightbox-media img')].map((i) => i.getAttribute('alt')) } : null;
+				});
+			// A click selects the picture, a click on the selected picture opens the viewer.
+			for (let i = 0; i < 2 && !(await popViewer()); i++) {
+				await pop.mouse.click(target.x, target.y);
+				await sleep(700);
+			}
+			const shown = await popViewer();
+			const layoutWords = /(^|\|)(wrap-(left|right|block)|gap-(0|8|16|24))(\||$)/;
+			check(
+				'pop-out: the image viewer opens there, titled without layout words',
+				!!shown && !!shown.title && !layoutWords.test(shown.title) && shown.alts.every((a) => !layoutWords.test(a ?? '')),
+				{ pictureAlt: target.alt, viewer: shown },
+			);
+			const close = await pop.evaluate(() => {
+				const b = document.querySelector('.lightbox .modal-close-button')?.getBoundingClientRect();
+				return b ? { x: b.left + b.width / 2, y: b.top + b.height / 2 } : null;
+			});
+			if (close) await pop.mouse.click(close.x, close.y);
+			await sleep(500);
 		}
+		await popSession?.detach().catch(() => {});
 		await page.evaluate(() => window.__itwPopout.detach());
 		await sleep(800);
 		// With the DevTools connection attached, the emptied pop-out window can stay open (Obsidian has already
@@ -131,6 +171,8 @@ export default probe(async (h, check) => {
 		// A window kept open by the DevTools connection can take focus after Obsidian let go of it; Obsidian's
 		// own focus handler makes the main window the active one again (notices and menus go there).
 		await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+		// Had the viewer opened in the main window instead, it would cover the next steps.
+		await closeLightbox(page);
 		const ownedAfter = await owned();
 		check('closing the pop-out releases what the plugin registered for it', JSON.stringify(ownedAfter) === JSON.stringify(ownedBefore), { before: ownedBefore, after: ownedAfter });
 		// (Whether the closed window's document is then garbage-collected is not checked here: the editor code
@@ -145,6 +187,7 @@ export default probe(async (h, check) => {
 
 	// Light and dark themes: the toolbar and the menus use Obsidian's colours.
 	const themeBefore = await page.evaluate(() => app.vault.getConfig('theme'));
+	restore(() => page.evaluate((t) => app.changeTheme(t ?? 'moonstone'), themeBefore));
 	await h.setNote(page, 'Fixture.md', sourceNote('Fixture.md'));
 	for (const [theme, name] of [
 		['moonstone', 'light'],

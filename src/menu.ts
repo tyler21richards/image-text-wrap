@@ -12,6 +12,8 @@
 //
 // Remote and data-URI images in Live Preview: Obsidian builds their menu with Menu.forEvent and fires no
 // file-menu, so the entries go into that same menu, from the right-click on its way back up.
+//
+// Every window also gets the image viewer's title cleaned of layout words (src/viewer-title.ts).
 import { Text } from '@codemirror/state';
 import { Component, Menu, type App, type MarkdownPostProcessorContext, type TFile } from 'obsidian';
 import { drawnImages, drawnTarget, editableImageFrom, editorViewFor, isElement, readingImageFrom } from './dom';
@@ -24,6 +26,7 @@ import type ImageTextWrapPlugin from './main';
 import { GAP_LABELS } from './settings';
 import { SPACING_LABEL, WRAP_CHOICES, layoutAfterWrapClick, layoutForGap } from './ui/layout-choices';
 import { lineOffset, linkForDrawnImage, sectionImageLinks } from './ui/section-images';
+import { watchViewerTitles } from './viewer-title';
 
 // Sections of our own, so the choices form their own groups. Obsidian sorts sections it does not know
 // just above "Delete image" (measured on 1.14.4). Its "image" section would put them between "Copy image"
@@ -176,6 +179,8 @@ export function registerImageMenu(plugin: ImageTextWrapPlugin): void {
 			const subject = livePreviewSubject(e.target);
 			if (subject) addLayoutItems(menu, subject, plugin.settings.defaultGap);
 		});
+		// Obsidian's image viewer opens in whichever window is active, so it is watched in each one.
+		watchViewerTitles(doc, owner);
 	});
 
 	const sections = new WeakMap<HTMLElement, MarkdownPostProcessorContext>();
