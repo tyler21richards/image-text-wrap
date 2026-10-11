@@ -58,6 +58,52 @@ export function nearestTarget(count: number, topAt: (i: number) => number, y: nu
 	return best;
 }
 
+/** How far the part of the note that starts at document position `pos` moves (by < 0: up). */
+export interface Shift {
+	pos: number;
+	by: number;
+}
+
+/**
+ * How far the note moves at `pos`: as far as the last part that starts at or before it (`shifts` in document
+ * order), or not at all above the first part.
+ */
+export function shiftAt(shifts: readonly Shift[], pos: number): number {
+	let lo = 0;
+	let hi = shifts.length;
+	while (lo < hi) {
+		const mid = (lo + hi) >> 1;
+		if (shifts[mid]!.pos <= pos) lo = mid + 1;
+		else hi = mid;
+	}
+	return lo > 0 ? shifts[lo - 1]!.by : 0;
+}
+
+/**
+ * How far the line a moved image lands on (original line `line`) rises once the move is written: the original
+ * lines [removed.from, removed.to) go where they are above it, and everything above it re-flows. `top(i)` is
+ * the top of original line `i` now, `flowedTop(i)` with the image gone from its old place.
+ */
+export function landingRise(
+	line: number,
+	removed: { from: number; to: number },
+	top: (line: number) => number,
+	flowedTop: (line: number) => number,
+): number {
+	let rise = top(line) - flowedTop(line);
+	const end = Math.min(removed.to, line);
+	if (removed.from < end) rise += flowedTop(end) - flowedTop(removed.from);
+	return rise;
+}
+
+/**
+ * How far a dropped image would land above the drop indicator: the view is held so the landing stays put,
+ * by scrolling up as far as the landing `rise`s, but a note cannot scroll above its top.
+ */
+export function landingShortfall(rise: number, scrollTop: number): number {
+	return Math.max(0, rise - Math.max(0, scrollTop));
+}
+
 /** Scales a width and height down (never up) to fit a box, keeping the proportions. */
 export function fitWithin(width: number, height: number, maxWidth: number, maxHeight: number): { width: number; height: number } {
 	if (width <= 0 || height <= 0) return { width: Math.max(0, Math.min(width, maxWidth)), height: Math.max(0, Math.min(height, maxHeight)) };

@@ -3,6 +3,7 @@
 // - a drop at the end of the note while scrolled to the very bottom (CodeMirror keeps the bottom still),
 // - a drop below the text the image wrapped (that text re-flows once it has left),
 // - undo and redo of a move come back to the view from before each,
+// - undo of a drag that scrolled the note goes back to where the image was, and redo to where it landed,
 // - navigating right after a drop or a layout change (a click in the Outline) is not undone by the hold.
 // Every gesture is real pointer or keyboard input; page.evaluate only measures and sets up notes and scroll.
 //
@@ -187,6 +188,54 @@ export default async (h) => {
 		return {
 			pass: near(landed?.box.top, during.box) && near(after['Rain here'], before['Rain here']) && st2 === st0 && sameTops(undone, before),
 			evidence: `indicator "${during.label}" at ${during.box}; image drawn at ${landed?.box.top}; "Rain here" ${before['Rain here']} -> ${after['Rain here']}; undo: scrollTop ${st0} -> ${st2}, lines ${JSON.stringify(undone)} (before ${JSON.stringify(before)})`,
+		};
+	});
+
+	// ---- A drag that scrolls the note a long way, then undo and redo ----
+	await run('drag that scrolls the note, then undo and redo', async () => {
+		await openNote(page, d.FIXTURE, 'live');
+		await d.resetNote(page, null);
+		await d.scrollToLine(page, LANDSCAPE - 1, 40);
+		const g = await d.geometry(page, LANDSCAPE);
+		const st0 = await d.scrollTop(page);
+		const before = await d.embedOf(page, '![[landscape.png');
+		// Hold in the bottom band until the note has scrolled a long way, then drop in the middle of the editor.
+		await d.pressAndMove(page, centre(before), { x: g.column.right - 60, y: g.scroller.bottom - 6 }, 8);
+		for (let i = 0; i < 80 && (await d.scrollTop(page)) < st0 + 2500; i++) await d.sleep(100);
+		await page.mouse.move(g.column.right - 60, (g.scroller.top + g.scroller.bottom) / 2, { steps: 4 });
+		await d.sleep(150);
+		await d.frames(page, 3);
+		const during = await d.indicatorTops(page);
+		await page.mouse.up();
+		await settle();
+		await page.screenshot({ path: `${out}/scroll-far-drop.png` });
+		const st1 = await d.scrollTop(page);
+		const dropped = await d.embedOf(page, '![[landscape.png');
+		const moved = (await d.noteText(page)) !== d.fixtureText();
+		// Undo: the image is back where it was, on screen, as before the press.
+		await page.keyboard.press('Meta+z');
+		await settle();
+		await page.screenshot({ path: `${out}/scroll-far-undo.png` });
+		const undone = await d.embedOf(page, '![[landscape.png');
+		const st2 = await d.scrollTop(page);
+		const restored = (await d.noteText(page)) === d.fixtureText();
+		// Redo: back to where it landed, on screen.
+		await page.keyboard.press('Meta+Shift+z');
+		await settle();
+		const redone = await d.embedOf(page, '![[landscape.png');
+		const st3 = await d.scrollTop(page);
+		await d.resetNote(page, null);
+		return {
+			pass:
+				moved &&
+				restored &&
+				st1 > st0 + 1000 &&
+				near(dropped?.box.top, during.box ?? during.bar) &&
+				undone?.line === LANDSCAPE &&
+				near(undone?.box.top, before.box.top) &&
+				// The same view, told by where the image is (heights above it may have been measured since).
+				near(redone?.box.top, dropped?.box.top),
+			evidence: `before: scrollTop ${st0}, image at ${before.box.top}; drop: indicator "${during.label}" at ${during.box ?? during.bar}, scrollTop ${st1}, image at ${dropped?.box.top}; undo: scrollTop ${st2}, image on line ${undone?.line} at ${undone?.box.top}; redo: scrollTop ${st3}, image at ${redone?.box.top}`,
 		};
 	});
 

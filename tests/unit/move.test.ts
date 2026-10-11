@@ -222,6 +222,28 @@ test('the plan says where the link line lands: below the line before, after any 
 	}
 });
 
+test('the plan says which original lines the move takes out whole', () => {
+	const cases: Array<[string, string, number, number, { from: number; to: number }]> = [
+		// [what, text, source, target, removed]
+		['glued to its text: only its line', join('![[a.png|wrap-left]]', 'Text', '', 'P2'), 0, 3, { from: 0, to: 1 }],
+		['between blank lines: its line and the blank line under it', join('P0', '', '![[a.png]]', '', 'P1', '', 'P2'), 2, 6, { from: 2, to: 4 }],
+		['first line, blank line under it', join('![[a.png]]', '', 'P1', '', 'P2'), 0, 4, { from: 0, to: 2 }],
+		['last line: the blank line above it goes too', join('P0', '', 'P1', '', '![[a.png]]'), 4, 0, { from: 3, to: 5 }],
+		['the link shared its line: nothing whole', join('Before ![[a.png]] after', '', 'P2'), 0, 2, { from: 0, to: 0 }],
+		['side change in the same place: nothing whole', join('P1', '', '![[a.png|wrap-left]]', 'Text A'), 2, 2, { from: 2, to: 2 }],
+	];
+	for (const [what, text, source, target, removed] of cases) {
+		const link = what.startsWith('side change') ? '![[a.png|wrap-right]]' : undefined;
+		const { plan } = moved(text, source, target, { link });
+		assert.deepEqual(plan.removed, removed, what);
+		// What is left once those lines are gone is the planned note without the inserted lines.
+		const lines = text.split('\n');
+		const kept = [...lines.slice(0, removed.from), ...lines.slice(removed.to)];
+		const inserted = plan.lines.length - kept.length;
+		if (removed.from < removed.to) assert.ok(inserted >= 1 && inserted <= 3, `${what}: ${inserted} lines inserted`);
+	}
+});
+
 test('an unwrapped image always gets a paragraph of its own', () => {
 	const text = join('P1', '', '![[a.png]]', '', '# Heading', '', '- item');
 	assert.equal(moved(text, 2, 6).out, join('P1', '', '# Heading', '', '![[a.png]]', '', '- item'));
