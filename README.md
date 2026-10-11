@@ -45,6 +45,8 @@ Tap a picture in Live Preview. A panel opens at the bottom of the screen, above 
 
 Tap the highlighted wrap button again to turn wrapping off. Tapping the panel does not open the keyboard or move the cursor, and every change is one undo step. If the panel would cover the picture, the note scrolls the picture into view. To close the panel, tap anywhere in the text.
 
+On a phone in landscape the panel is a single row. On a tablet it becomes a single row while the keyboard leaves too little room for the full panel. With a sidebar pinned on a tablet, the panel stays beside it, over the note.
+
 ### Moving an image
 
 Press on an image and drag it. A copy follows the pointer, and a line shows where the image will land: at the start of a paragraph, heading, list, quote, table or code block, or at the end of the note.
@@ -108,7 +110,7 @@ The size stays last, so Obsidian keeps applying it. If you remove the plugin, yo
 - PDF export uses Arial unless you set a text font in Obsidian's Appearance settings, so line breaks may differ from the screen.
 - On a phone or tablet, holding an image picks it up instead of opening Obsidian's image menu (Copy image, Remove image and so on). Turn off **Move images by dragging** to get that menu back.
 - On Android, the Back button does not close the picture panel or cancel a drag unless Obsidian has somewhere to go back to. Tap the text to close the panel.
-- If the keyboard opens while a picture is selected, the panel moves above the keyboard but does not scroll the picture into view again.
+- If the keyboard opens while a picture is selected, the panel moves above the keyboard but does not scroll the picture into view again. On a phone in landscape, most keyboards leave less than a line of the note in view; the panel then waits until the keyboard closes.
 
 ## Privacy
 
