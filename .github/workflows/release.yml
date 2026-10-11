@@ -8,6 +8,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   release:
@@ -28,6 +30,13 @@ jobs:
             echo "Tag ${GITHUB_REF_NAME} does not match manifest.json version $version"
             exit 1
           fi
+      - name: Attest that these files were built from this commit
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            main.js
+            manifest.json
+            styles.css
       - name: Create a draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -19,19 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----------------------------------------------------------------------------
-
-Portions of this software are adapted from the following MIT-licensed projects.
-Their copyright notices are reproduced as the MIT license requires.
-
-Adjustable Media (https://github.com/Yi-luo-hua/obsidian-adjustable-media)
-Copyright (c) 2026 Yi-luo-hua
-
-Image Kit (https://github.com/haivri/obsidian-image-kit)
-Copyright (c) 2026 Robert Fleming
-
-Image Rows and Wraps (https://github.com/Black-Manthor/image-rows-and-wraps)
-Copyright (c) 2026 Black-Manthor
-
-Each of those projects is licensed under the MIT license, with the same terms as above.

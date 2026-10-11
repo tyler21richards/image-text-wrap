@@ -147,7 +147,7 @@ npm run lint
 
 ## Credits
 
-Parts of this plugin are adapted from these MIT-licensed plugins. Their notices are in [LICENSE](LICENSE).
+Parts of this plugin are adapted from these MIT-licensed plugins. Their notices are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 - [Adjustable Media](https://github.com/Yi-luo-hua/obsidian-adjustable-media) by Yi-luo-hua: pointer gesture handling, undo scroll fix, float fixes for Live Preview and Reading view.
 - [Image Kit](https://github.com/haivri/obsidian-image-kit) by Robert Fleming: in-link layout grammar and toolbar patterns.
