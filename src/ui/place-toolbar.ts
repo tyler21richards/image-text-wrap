@@ -155,13 +155,43 @@ export function sheetBottom(s: SheetScreen): number {
  * Where the top edge of a sheet `height` px tall goes (window px), sitting at sheetBottom(s). Null when it
  * does not fit: it must stay on screen, below the note's header (where it rests while shown, so the sheet
  * does not come and go as the header slides) and the top safe area, and leave at least `noteRoom` px of the
- * note visible between them. With the keyboard up on a phone in landscape there is no such room, and the
- * sheet waits until there is.
+ * note visible between them.
  */
 export function sheetTop(s: SheetScreen, height: number, header: SheetHeader, noteRoom: number): number | null {
 	const top = s.height - sheetBottom(s) - height;
 	const limit = Math.max(0, s.safeTop, header.restingBottom);
 	return top - limit >= noteRoom ? top : null;
+}
+
+/** A window at most this tall (a phone in landscape) always gets the compact sheet. */
+export const SHORT_WINDOW = 500;
+
+/** How much of the note each form of the sheet leaves in view at least (sheetTop's `noteRoom`). */
+export interface SheetRoom {
+	full: number;
+	compact: number;
+}
+
+/** The form of the sheet that shows (compact: one row instead of two), and where its top edge goes. */
+export interface SheetForm {
+	compact: boolean;
+	top: number;
+}
+
+/**
+ * Which form of the sheet shows, and where (sheetTop): the full sheet when it leaves `room.full` px of the note
+ * in view, else the compact one when that leaves `room.compact` px, else none (null: with the keyboard up on a
+ * phone in landscape there may be no such room, and the sheet waits until there is). A short window
+ * (SHORT_WINDOW) always gets the compact sheet, which leaves room above it for the picture it is for.
+ * `heightOf` measures the sheet in a form; the compact one is measured only when it is needed.
+ */
+export function sheetForm(s: SheetScreen, header: SheetHeader, room: SheetRoom, heightOf: (compact: boolean) => number): SheetForm | null {
+	if (s.height > SHORT_WINDOW) {
+		const top = sheetTop(s, heightOf(false), header, room.full);
+		if (top !== null) return { compact: false, top };
+	}
+	const top = sheetTop(s, heightOf(true), header, room.compact);
+	return top === null ? null : { compact: true, top };
 }
 
 /**

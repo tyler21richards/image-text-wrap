@@ -11,13 +11,16 @@ import {
 	layoutForGap,
 } from '../../src/ui/layout-choices.ts';
 import {
+	SHORT_WINDOW,
 	keyboardShown,
 	revealScroll,
 	revealTop,
 	sheetBottom,
+	sheetForm,
 	sheetTop,
 	type Box,
 	type SheetHeader,
+	type SheetRoom,
 	type SheetScreen,
 } from '../../src/ui/place-toolbar.ts';
 
@@ -97,41 +100,108 @@ test('a picture taller than the free space shows its top, never scrolled past it
 // header 59..104, the top safe area 59 (the emulation keeps the portrait insets).
 const landscape = (over: Partial<SheetScreen> = {}): SheetScreen =>
 	phone({ height: 390, visual: { top: 0, height: 390 }, bars: [306], ...over });
-/** The editing toolbar (44 px) above a keyboard of `kb` px, with the navigation bar taken out. */
-const typing = (kb: number): Partial<SheetScreen> => ({ keyboard: kb, bars: [390 - kb - 44] });
+/**
+ * Obsidian's editing toolbar above a keyboard of `kb` px, with the navigation bar taken out. Obsidian puts its
+ * top at calc(100vh - var(--keyboard-height) - var(--mobile-toolbar-height)), and --mobile-toolbar-height is
+ * 52 px (the 44 px bar and 8 px above the keyboard).
+ */
+const typing = (kb: number, height = 390): Partial<SheetScreen> => ({ keyboard: kb, bars: [height - kb - 52] });
+/** The sheet's heights as measured: full on a phone (186 portrait, 169 landscape) and on a tablet (178), compact 69. */
+const COMPACT = 69;
 const ROOM = 88;
+/** The plugin's rule: two rows of 44 px of the note for the full sheet, one for the compact one. */
+const ROOMS: SheetRoom = { full: 88, compact: 44 };
+/** A sheet measured `full` px tall in its full form; records which forms were measured. */
+const heights = (full: number, compact = COMPACT) => {
+	const measured: string[] = [];
+	return {
+		measured,
+		of: (isCompact: boolean) => {
+			measured.push(isCompact ? 'compact' : 'full');
+			return isCompact ? compact : full;
+		},
+	};
+};
 
 test('the sheet fits under the header with room for the note: its top edge', () => {
 	// Portrait, the full sheet (186 px) above the floating navigation bar at 760.
 	assert.equal(sheetTop(phone({ bars: [760] }), 186, header(), ROOM), 844 - 92 - 186);
 	// Portrait with a 300 px keyboard and the editing toolbar (52 px) above it: still plenty of note above it.
 	assert.equal(sheetTop(phone({ keyboard: 300, bars: [492] }), 186, header(), ROOM), 492 - 8 - 186);
-	// Landscape, the compact sheet (68 px): above the navigation bar's resting place.
-	assert.equal(sheetTop(landscape(), 68, header(), ROOM), 306 - 8 - 68);
+	// Landscape, the compact sheet: above the navigation bar's resting place.
+	assert.equal(sheetTop(landscape(), COMPACT, header(), ROOM), 306 - 8 - COMPACT);
 });
 
 test('with the keyboard up on a phone in landscape the sheet does not fit, and hides rather than leave the screen', () => {
 	// The full sheet (169 px) with a 200 px keyboard: its top would be at -39, off the screen.
 	assert.equal(sheetTop(landscape(typing(200)), 169, header(), ROOM), null);
-	// The compact sheet still leaves no room for the note under the header (top 70 < 104 + 88).
-	assert.equal(sheetTop(landscape(typing(200)), 68, header(), ROOM), null);
-	assert.equal(sheetTop(landscape(typing(120)), 68, header(), ROOM), null);
-	// A real iPhone has no top inset in landscape and a lower header (12..57): a small keyboard leaves room.
+	// The compact sheet still leaves no room for the note under the header (its top 61 is above it).
+	assert.equal(sheetForm(landscape(typing(200)), header(), ROOMS, heights(169).of), null);
+	// With the emulation's top inset, a 120 px keyboard leaves 37 px of note: not even one row.
+	assert.equal(sheetForm(landscape(typing(120)), header(), ROOMS, heights(169).of), null);
+});
+
+test('a phone in landscape with a small keyboard and no top inset shows the compact sheet, with a row or more of the note above it', () => {
+	// A real iPhone has no top inset in landscape, and its header rests higher (12..57).
 	const real = (kb: number) => landscape({ ...typing(kb), safeTop: 0 });
-	assert.equal(sheetTop(real(120), 68, header({ bottom: 57, restingBottom: 57 }), ROOM), 390 - 120 - 44 - 8 - 68);
-	assert.equal(sheetTop(real(200), 68, header({ bottom: 57, restingBottom: 57 }), ROOM), null);
+	const low = header({ bottom: 57, restingBottom: 57 });
+	// 120 px: the editing toolbar's top at 218, the sheet's at 141, 84 px of note under the header.
+	assert.deepEqual(sheetForm(real(120), low, ROOMS, heights(169).of), { compact: true, top: 390 - 120 - 52 - 8 - COMPACT });
+	assert.deepEqual(sheetForm(real(160), low, ROOMS, heights(169).of), { compact: true, top: 57 + 44 });
+	assert.equal(sheetForm(real(161), low, ROOMS, heights(169).of), null);
+	assert.equal(sheetForm(real(200), low, ROOMS, heights(169).of), null);
 });
 
 test('the room is counted from where the header rests, so the sheet does not come and go as the header slides', () => {
 	const slidAway = header({ bottom: 1, restingBottom: 104 });
-	assert.equal(sheetTop(landscape(typing(120)), 68, slidAway, ROOM), null);
-	assert.equal(sheetTop(landscape(), 68, slidAway, ROOM), sheetTop(landscape(), 68, header(), ROOM));
+	assert.equal(sheetTop(landscape(typing(120)), COMPACT, slidAway, 44), null);
+	assert.equal(sheetTop(landscape(), COMPACT, slidAway, ROOM), sheetTop(landscape(), COMPACT, header(), ROOM));
 });
 
 test('without a header, the top safe area and the top of the screen bound the sheet', () => {
-	assert.equal(sheetTop(landscape(typing(120)), 68, NO_HEADER, ROOM), 150);
-	assert.equal(sheetTop(landscape({ ...typing(120), safeTop: 0 }), 68, NO_HEADER, 150), 150);
-	assert.equal(sheetTop(landscape({ ...typing(120), safeTop: 0 }), 68, NO_HEADER, 151), null);
+	// The sheet's top at 141, the top safe area 59 px.
+	assert.equal(sheetTop(landscape(typing(120)), COMPACT, NO_HEADER, 141 - 59), 141);
+	assert.equal(sheetTop(landscape(typing(120)), COMPACT, NO_HEADER, 141 - 59 + 1), null);
+	assert.equal(sheetTop(landscape({ ...typing(120), safeTop: 0 }), COMPACT, NO_HEADER, 141), 141);
+	assert.equal(sheetTop(landscape({ ...typing(120), safeTop: 0 }), COMPACT, NO_HEADER, 142), null);
+});
+
+// A tablet in landscape, as measured in the emulation: 1024 x 768, no navigation bar, no safe areas, the tab
+// bar and the note's header over the note down to 151.
+const tablet = (over: Partial<SheetScreen> = {}): SheetScreen =>
+	phone({ height: 768, visual: { top: 0, height: 768 }, safeBottom: 0, safeTop: 0, ...over });
+const TABLET_HEADER = header({ bottom: 151, restingBottom: 151 });
+
+test('the full sheet shows while it leaves two rows of the note in view; the compact one is not measured then', () => {
+	const h = heights(186);
+	assert.deepEqual(sheetForm(phone({ bars: [760] }), header(), ROOMS, h.of), { compact: false, top: 844 - 92 - 186 });
+	assert.deepEqual(h.measured, ['full']);
+	// A tablet with a 290 px keyboard: the full sheet (178 px) leaves 89 px under the header.
+	assert.deepEqual(sheetForm(tablet(typing(290, 768)), TABLET_HEADER, ROOMS, heights(178).of), { compact: false, top: 768 - 290 - 52 - 8 - 178 });
+});
+
+test('a tablet whose keyboard leaves too little room for the full sheet shows the compact one, which fits', () => {
+	for (const kb of [300, 350, 400]) {
+		const h = heights(178);
+		const top = 768 - kb - 52 - 8 - COMPACT;
+		assert.deepEqual(sheetForm(tablet(typing(kb, 768)), TABLET_HEADER, ROOMS, h.of), { compact: true, top }, `keyboard ${kb}`);
+		assert.ok(top - 151 >= 44, `keyboard ${kb}: ${top - 151} px of note`);
+		assert.deepEqual(h.measured, ['full', 'compact']);
+	}
+	// Only a keyboard that leaves less than a row of the note even then hides it.
+	assert.equal(sheetForm(tablet(typing(445, 768)), TABLET_HEADER, ROOMS, heights(178).of), null);
+});
+
+test('a short window (a phone in landscape) always has the compact sheet, even where the full one would fit', () => {
+	// 480 px tall, no inset, the header resting at 57 and the navigation bar at 400: the full sheet (169 px)
+	// would leave 166 px of the note, but the picture it is for would not fit above it.
+	const h = heights(169);
+	const short = phone({ height: SHORT_WINDOW - 20, visual: null, safeTop: 0, bars: [400] });
+	assert.deepEqual(sheetForm(short, header({ bottom: 57, restingBottom: 57 }), ROOMS, h.of), { compact: true, top: 400 - 8 - COMPACT });
+	assert.deepEqual(h.measured, ['compact']);
+	// One px taller is a window like any other.
+	const tall = phone({ height: SHORT_WINDOW + 1, visual: null, safeTop: 0, bars: [421] });
+	assert.equal(sheetForm(tall, header({ bottom: 57, restingBottom: 57 }), ROOMS, heights(169).of)?.compact, false);
 });
 
 test('a keyboard is up when Obsidian reports one or the visual viewport ends above the window\'s bottom', () => {
@@ -154,7 +224,7 @@ test('a reveal brings the picture up to below the header, or to below the top sa
 
 test('phone landscape: the picture (210 px) fits between the status bar and the compact sheet once the header slides away', () => {
 	const screen = landscape();
-	const top = sheetTop(screen, 68, header(), ROOM);
+	const top = sheetTop(screen, COMPACT, header(), ROOMS.compact);
 	assert.ok(top !== null);
 	// Tapped low on the screen, under where the sheet goes.
 	const picture = box(72, 295, 392, 505);

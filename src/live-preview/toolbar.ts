@@ -18,13 +18,14 @@ import {
 	revealScroll,
 	revealTop,
 	sheetBottom,
-	sheetTop,
+	sheetForm,
 	visiblePart,
 	type Box,
 	type Placement,
+	type SheetRoom,
 } from '../ui/place-toolbar';
 import { PictureToolbar, type LayoutPanel, type ToolbarHost, type ToolbarSubject } from './toolbar-dom';
-import { DOUBLE_TAP_WAIT, PictureSheet, ScreenWatch, measureHeader, measureScreen } from './toolbar-sheet';
+import { DOUBLE_TAP_WAIT, PictureSheet, ScreenWatch, measureHeader, measureScreen, type SheetPlace } from './toolbar-sheet';
 import { keepScrollExtension, releaseScrollPosition } from './keep-scroll';
 import { isLivePreview, writeLayout } from './toolbar-target';
 
@@ -34,11 +35,14 @@ const MARGIN = 4;
 /** On phones and tablets: space between the sheet and the bars or keyboard below it, and kept around the picture it reveals. */
 const SHEET_GAP = 8;
 /**
- * On phones and tablets: how much of the note the sheet leaves visible below the note's header at least (two
- * rows of 44 px). With less room, as with the keyboard up on a phone in landscape, the sheet would hide the
- * whole note or run off the screen, so it hides until the keyboard goes.
+ * On phones and tablets: how much of the note the sheet leaves visible below the note's header at least. The
+ * full sheet leaves two rows of 44 px, or else gives way to the compact one (one row), as with the keyboard up
+ * on a tablet; that one leaves one row. With less room still, as with the keyboard up on a phone in landscape,
+ * the sheet would hide the whole note or run off the screen, so it hides until the keyboard goes.
  */
-const NOTE_ROOM = 88;
+const NOTE_ROOM: SheetRoom = { full: 88, compact: 44 };
+/** On phones and tablets: how long the smooth scroll of a reveal may take (it takes about 200 ms), in milliseconds. */
+const REVEAL_SCROLL_MS = 1000;
 
 const toolbars = new Map<Document, PictureToolbar>();
 const sheets = new Map<Document, PictureSheet>();
@@ -107,8 +111,7 @@ interface SheetMeasured {
 	sheet: PictureSheet;
 	embed: HTMLElement;
 	subject: ToolbarSubject;
-	/** The sheet's bottom edge, in px above the bottom of the window. */
-	bottom: number;
+	place: SheetPlace;
 	/** How far to scroll the note to show the picture above the sheet (0 when it does not cover the picture). */
 	reveal: number;
 }
@@ -120,6 +123,14 @@ interface PendingReveal {
 	timer: number;
 	/** The wait is over: the next write scrolls. */
 	due: boolean;
+}
+
+/** Phones and tablets: the smooth scroll of a reveal, while it may be under way. */
+interface RevealScroll {
+	/** The scroll position it ends at. */
+	target: number;
+	/** Date.now() by which it is over in any case. */
+	until: number;
 }
 
 class ToolbarView implements PluginValue, ToolbarHost {
@@ -147,6 +158,8 @@ class ToolbarView implements PluginValue, ToolbarHost {
 	private revealedAt: number | null = null;
 	/** Phones and tablets: that scroll, while it waits for a double tap's second tap (writeSheet). */
 	private pendingReveal: PendingReveal | null = null;
+	/** Phones and tablets: that scroll, while it may be under way (finishReveal). */
+	private revealing: RevealScroll | null = null;
 	/** Phones and tablets: the window's width when last seen. A new width is a rotation; a keyboard changes only the height. */
 	private width: number;
 	/** A measure request queued before destroy() may still run; it must not show the toolbar again. */
@@ -169,6 +182,7 @@ class ToolbarView implements PluginValue, ToolbarHost {
 		this.width = view.dom.win.innerWidth;
 		if (this.mobile) {
 			this.screen = new ScreenWatch(view.scrollDOM, { changed: this.onScreenChange, keydown: this.onWindowKeyDown, tapped: this.onTap });
+			view.scrollDOM.addEventListener('scroll', this.onRevealScroll, { passive: true });
 		}
 		liveViews.add(this);
 		this.schedule();
@@ -293,9 +307,9 @@ class ToolbarView implements PluginValue, ToolbarHost {
 	}
 
 	/**
-	 * Phones and tablets: the sheet sits above the keyboard and Obsidian's bars, and shows while any of the
-	 * picture is on screen (above the keyboard, below the note's header), also behind the sheet itself, and
-	 * while it fits on screen below the header (sheetTop).
+	 * Phones and tablets: the sheet sits above the keyboard and Obsidian's bars, across the note's pane, and
+	 * shows while any of the picture is on screen (above the keyboard, below the note's header), also behind
+	 * the sheet itself, and while it fits on screen below the header, in its full or compact form (sheetForm).
 	 */
 	private readSheet(): SheetMeasured | null {
 		const view = this.view;
@@ -326,14 +340,20 @@ class ToolbarView implements PluginValue, ToolbarHost {
 		if (picture.width === 0 || picture.height === 0) picture = embed.getBoundingClientRect();
 		if (!visiblePart(box(picture), visible)) return null;
 
-		const top = sheetTop(screen, sheet.el.offsetHeight, header, NOTE_ROOM);
-		if (top === null) return null;
+		const form = sheetForm(screen, header, NOTE_ROOM, (compact) => sheet.heightAs(compact));
+		if (!form) return null;
 		return {
 			sheet,
 			embed,
 			subject: { from: located.link.from, layout: located.link.layout, doc: view.state.doc },
-			bottom: sheetBottom(screen),
-			reveal: revealScroll(box(picture), revealTop(screen, header, scroller.top), top, SHEET_GAP),
+			// Across the note's pane: a tablet's pinned sidebar sits beside the note, and is drawn above the sheet.
+			place: {
+				bottom: sheetBottom(screen),
+				left: Math.round(visible.left),
+				right: Math.round(win.innerWidth - visible.right),
+				compact: form.compact,
+			},
+			reveal: revealScroll(box(picture), revealTop(screen, header, scroller.top), form.top, SHEET_GAP),
 		};
 	}
 
@@ -345,31 +365,30 @@ class ToolbarView implements PluginValue, ToolbarHost {
 		if (this.shownOn && this.shownOn !== m.sheet) this.release();
 		m.sheet.host = this;
 		m.sheet.render(m.subject);
-		m.sheet.showAt(m.bottom);
+		m.sheet.showAt(m.place);
 		this.shownOn = m.sheet;
 		this.shownFrom = m.subject.from;
 		this.watch(m.embed);
 		// Once per tap on a picture (and after a rotation): a picture the sheet would cover scrolls up into
 		// view. Not at once: the second tap of a double tap must find the picture where the first one did (it
 		// opens Obsidian's viewer there), so the scroll waits until such a tap can no longer come, and a press
-		// on the note meanwhile (that tap, or the start of a scroll) calls it off. A write keeps the view still
-		// (writeLayout), and scrolling the note afterwards is left alone.
+		// on the note meanwhile (that tap, or the start of a scroll) calls it off. Whether to scroll, and how
+		// far, is measured then, on a settled screen: the first look after a rotation sees the text re-wrapped
+		// at the old scroll position, which CodeMirror puts right only afterwards. A write keeps the view still
+		// (writeLayout, finishReveal), and scrolling the note afterwards is left alone.
 		const from = m.subject.from;
 		const pending = this.pendingReveal;
 		if (this.revealedAt !== from) {
 			this.revealedAt = from;
 			this.cancelReveal();
-			if (m.reveal > 0) this.revealLater(from);
+			this.revealLater(from);
 		} else if (pending && pending.due && pending.from === from) {
 			this.pendingReveal = null;
-			if (m.reveal > 0) {
-				const still = this.view.dom.win.matchMedia('(prefers-reduced-motion: reduce)').matches;
-				this.view.scrollDOM.scrollBy({ top: m.reveal, behavior: still ? 'auto' : 'smooth' });
-			}
+			if (m.reveal > 0) this.reveal(m.reveal);
 		}
 	}
 
-	/** Phones and tablets: scrolls the picture of the link at `from` clear of the sheet in DOUBLE_TAP_WAIT ms, measured afresh then. */
+	/** Phones and tablets: scrolls the picture of the link at `from` clear of the sheet in DOUBLE_TAP_WAIT ms, if it is under it then. */
 	private revealLater(from: number): void {
 		const pending: PendingReveal = { from, timer: 0, due: false };
 		pending.timer = this.view.dom.win.setTimeout(() => {
@@ -380,11 +399,45 @@ class ToolbarView implements PluginValue, ToolbarHost {
 		this.pendingReveal = pending;
 	}
 
+	/** Phones and tablets: scrolls the note `by` px (the picture up, clear of the sheet), smoothly unless motion is reduced. */
+	private reveal(by: number): void {
+		const scroller = this.view.scrollDOM;
+		const still = this.view.dom.win.matchMedia('(prefers-reduced-motion: reduce)').matches;
+		const target = Math.min(scroller.scrollTop + by, scroller.scrollHeight - scroller.clientHeight);
+		scroller.scrollBy({ top: by, behavior: still ? 'auto' : 'smooth' });
+		this.revealing = still ? null : { target, until: Date.now() + REVEAL_SCROLL_MS };
+	}
+
+	/**
+	 * Phones and tablets: a layout chosen on the sheet while its picture is still on its way out from under the
+	 * sheet (the reveal waiting, or its scroll under way). The reveal ends where it was going, at once: the
+	 * write holds the view as it is while the new layout settles (writeLayout), and holding it halfway would
+	 * scroll the note back at the next update of the editor and leave the picture under the sheet.
+	 */
+	private finishReveal(from: number): void {
+		const scroller = this.view.scrollDOM;
+		if (this.pendingReveal?.from === from) {
+			this.cancelReveal();
+			const m = this.readSheet();
+			if (m && m.subject.from === from && m.reveal > 0) scroller.scrollTop += m.reveal;
+			return;
+		}
+		const going = this.revealing;
+		this.revealing = null;
+		if (going && Date.now() < going.until && Math.abs(scroller.scrollTop - going.target) >= 1) scroller.scrollTop = going.target;
+	}
+
 	private cancelReveal(): void {
+		this.revealing = null;
 		if (!this.pendingReveal) return;
 		this.view.dom.win.clearTimeout(this.pendingReveal.timer);
 		this.pendingReveal = null;
 	}
+
+	/** Phones and tablets: a reveal's scroll that has got where it was going is over. */
+	private readonly onRevealScroll = (): void => {
+		if (this.revealing && Math.abs(this.view.scrollDOM.scrollTop - this.revealing.target) < 1) this.revealing = null;
+	};
 
 	/** Hides the toolbar if this view is the one showing it. */
 	private release(): void {
@@ -429,6 +482,7 @@ class ToolbarView implements PluginValue, ToolbarHost {
 	};
 
 	apply(subject: ToolbarSubject, layout: Layout): void {
+		if (this.mobile) this.finishReveal(subject.from);
 		writeLayout(this.view, subject.from, layout, subject.doc);
 	}
 
@@ -455,6 +509,8 @@ class ToolbarView implements PluginValue, ToolbarHost {
 
 	private readonly onWheel = (): void => {
 		releaseScrollPosition(this.view);
+		// Phones and tablets with a trackpad: the user's own scrolling takes over from a reveal under way.
+		this.revealing = null;
 	};
 
 	/**
@@ -488,6 +544,7 @@ class ToolbarView implements PluginValue, ToolbarHost {
 	destroy(): void {
 		this.destroyed = true;
 		this.screen?.destroy();
+		this.view.scrollDOM.removeEventListener('scroll', this.onRevealScroll);
 		this.classes.disconnect();
 		this.view.scrollDOM.removeEventListener('scroll', this.schedule, { capture: true });
 		this.view.scrollDOM.removeEventListener('wheel', this.onWheel, { capture: true });

@@ -1,11 +1,14 @@
 // M5, phones and tablets: the picture toolbar as a sheet docked at the bottom of the screen.
-//   node scripts/obsidian.mjs run tests/e2e/mobile-toolbar-sheet.mjs [phone|tablet] [light|dark] [--fixes-only]
+//   node scripts/obsidian.mjs run tests/e2e/mobile-toolbar-sheet.mjs [phone|tablet] [light|dark]
+//     [--fixes-only | --review-only] [--case=straddle,reveal-tap,rotate,landscape-keyboard,tablet-keyboard,pinned,narrow]
 // With no arguments it runs phone and tablet, each in the light and the dark theme, and then, once per size,
 // the cases added with the fixes after the M5 review (a double tap, a long press on iPhone and iPad, a phone
-// in landscape); --fixes-only runs just those. Obsidian runs in its own mobile emulation (tests/e2e/mobile.mjs),
-// and every tap, long press and swipe is real touch input sent over the DevTools protocol. The keyboard cannot
-// open in emulation: Obsidian's report of it (--keyboard-height) and a shrinking visual viewport are imitated,
-// and labelled so.
+// in landscape) and after the second review (reviewCases: a slow double tap, a tap during the reveal, a
+// rotation, the keyboard in landscape and on a tablet, a pinned sidebar, a narrow phone in landscape);
+// --fixes-only runs just those, --review-only just the second ones (--case picks some of them). Obsidian runs
+// in its own mobile emulation (tests/e2e/mobile.mjs), and every tap, long press and swipe is real touch input
+// sent over the DevTools protocol. The keyboard cannot open in emulation: Obsidian's report of it
+// (--keyboard-height) and a shrinking visual viewport are imitated, and labelled so.
 import { setMobile, touch } from './mobile.mjs';
 import { diffLines, probe, scrollToLink, sleep, sourceNote, waitFor, waitForImage } from './toolbar-helpers.mjs';
 
@@ -150,7 +153,11 @@ const sheetProbe = probe(async (h, check, restore) => {
 	const { page } = h;
 	const errors = h.watchErrors(page);
 	const args = h.args.filter((a) => !a.startsWith('--'));
-	const fixesOnly = h.args.includes('--fixes-only');
+	const reviewOnly = h.args.includes('--review-only');
+	const fixesOnly = reviewOnly || h.args.includes('--fixes-only');
+	const picked = h.args.find((a) => a.startsWith('--case='))?.slice(7).split(',') ?? null;
+	/** Whether a case of reviewCases runs (--case=name,... picks some). */
+	const runs = (name) => !picked || picked.includes(name);
 	const sizes = args[0] ? [args[0]] : ['phone', 'tablet'];
 	const themes = args[1] ? [args[1]] : ['light', 'dark'];
 	const plugin = () => page.evaluate(() => app.plugins.plugins['image-text-wrap'].settings);
@@ -169,13 +176,21 @@ const sheetProbe = probe(async (h, check, restore) => {
 	restore(() =>
 		page.evaluate(() => {
 			document.documentElement.style.removeProperty('--keyboard-height');
+			document.body.style.removeProperty('--safe-area-inset-top');
 			delete window.visualViewport.height;
-			app.workspace.leftSplit.collapse();
+			for (const split of [app.workspace.leftSplit, app.workspace.rightSplit]) {
+				split.setPinned?.(false);
+				split.collapse();
+			}
 			// The long press recorder (see "A long press on the sheet" below).
 			if (window.__itwVibrate) navigator.vibrate = window.__itwVibrate;
 			window.__itwBuzz = null;
 			// The double tap timer (see "A double tap on a picture low on the screen" below).
 			if (window.__itwPress) window.removeEventListener('touchstart', window.__itwPress, true);
+			// The event log of reviewCases (startLog below).
+			if (window.__itwLogOn) for (const type of ['pointerdown', 'pointerup', 'click']) window.removeEventListener(type, window.__itwLogOn, true);
+			window.__itwLogSheet?.disconnect();
+			window.__itwLog = window.__itwLogOn = window.__itwLogSheet = window.__itwLogEl = null;
 		}),
 	);
 
@@ -374,8 +389,15 @@ const sheetProbe = probe(async (h, check, restore) => {
 	const pressed = (s) => s.buttons.filter((b) => b.pressed === 'true').map((b) => b.text);
 	const line = (s) => s.doc.split('\n')[LINE - 1];
 
-	/** The sheet's place: above the bars and keyboard, inside the safe area, full width or a centred card. */
-	function placeProblems(s, size) {
+	/** Whether the sheet is in its compact form (one row, about 70 to 90 px tall instead of about 170). */
+	const compactSheet = (s) => s.shown && s.sheet.height <= 100;
+
+	/**
+	 * The sheet's place: above the bars and keyboard, inside the safe area, full width or (the full sheet on a
+	 * tablet) a centred card. Across the note's pane: `pane` is its left and right edge (the whole window when
+	 * not given).
+	 */
+	function placeProblems(s, size, pane = { left: 0, right: s.width }) {
 		const out = [];
 		if (!s.shown) return ['not shown'];
 		if (s.sheet.bottom > s.height - s.safeBottom - GAP + 1) out.push(`below the safe area (${s.sheet.bottom} > ${s.height - s.safeBottom - GAP})`);
@@ -383,8 +405,10 @@ const sheetProbe = probe(async (h, check, restore) => {
 		if (s.mobileToolbar && s.sheet.bottom > s.mobileToolbar.top - GAP + 1) out.push(`covers the editing toolbar (${s.sheet.bottom} > ${s.mobileToolbar.top})`);
 		if (s.sheet.left < 0 || s.sheet.right > s.width) out.push('off screen');
 		if (s.sheet.top < noteTop(s) - 1) out.push(`above the top of the screen or over the note's header (${s.sheet.top} < ${noteTop(s)})`);
-		if (size === 'phone' && (s.sheet.left > GAP + 1 || s.sheet.right < s.width - GAP - 1)) out.push(`not full width (${s.sheet.left}..${s.sheet.right} of ${s.width})`);
-		if (size === 'tablet' && (s.sheet.width > 481 || Math.abs(s.sheet.left - (s.width - s.sheet.right)) > 1)) out.push(`not a centred card (${s.sheet.left}..${s.sheet.right} of ${s.width})`);
+		const card = size === 'tablet' && !compactSheet(s);
+		if (!card && (s.sheet.left > pane.left + GAP + 1 || s.sheet.right < pane.right - GAP - 1)) out.push(`not full width (${s.sheet.left}..${s.sheet.right} of ${pane.left}..${pane.right})`);
+		if (s.sheet.left < pane.left || s.sheet.right > pane.right) out.push(`outside the note's pane (${s.sheet.left}..${s.sheet.right} of ${pane.left}..${pane.right})`);
+		if (card && (s.sheet.width > 481 || s.sheet.left < pane.left + GAP - 1 || s.sheet.right > pane.right - GAP + 1 || Math.abs(s.sheet.left - pane.left - (pane.right - s.sheet.right)) > 1)) out.push(`not a centred card (${s.sheet.left}..${s.sheet.right} of ${pane.left}..${pane.right})`);
 		return out;
 	}
 
@@ -670,6 +694,483 @@ const sheetProbe = probe(async (h, check, restore) => {
 		await deselect();
 		await h.setWindowSize(page, 390, 844);
 		await sleep(600);
+	}
+
+	/**
+	 * Touch input at set times (ms from the start), sent without waiting for one another: awaiting each event
+	 * adds about 40 ms, too much for the timing of a double tap. Steps: [ms, 'down' | 'up', x, y].
+	 */
+	async function timed(steps) {
+		const start = Date.now();
+		await Promise.all(
+			steps.map(
+				([ms, kind, x, y]) =>
+					new Promise((done) => {
+						setTimeout(() => (kind === 'down' ? t.down(x, y) : t.up()).then(done, done), Math.max(0, ms - (Date.now() - start)));
+					}),
+			),
+		);
+	}
+
+	/**
+	 * Starts a log in the page of every press, lift and click (page time, what it reached, the note's scroll
+	 * position then) and of the moment the sheet appears; readLog returns it.
+	 */
+	const startLog = () =>
+		page.evaluate(() => {
+			const sheet = document.querySelector('.itw-sheet');
+			window.__itwLog = { ev: [], shown: null };
+			if (!window.__itwLogOn) {
+				window.__itwLogOn = (e) => {
+					const cm = app.workspace.activeLeaf?.view?.editor?.cm;
+					const button = e.target.closest?.('button');
+					const where = e.target.closest?.('.itw-sheet') ? `sheet ${button?.textContent ?? ''}`.trim() : e.target.tagName;
+					window.__itwLog?.ev.push({ type: e.type, t: e.timeStamp, where, scrollTop: cm?.scrollDOM.scrollTop ?? null });
+				};
+				for (const type of ['pointerdown', 'pointerup', 'click']) window.addEventListener(type, window.__itwLogOn, true);
+			}
+			if (window.__itwLogEl !== sheet) {
+				window.__itwLogSheet?.disconnect();
+				window.__itwLogEl = sheet;
+				window.__itwLogSheet = new MutationObserver(() => {
+					const log = window.__itwLog;
+					if (log && log.shown === null && !sheet.classList.contains('itw-sheet-hidden')) log.shown = performance.now();
+				});
+				window.__itwLogSheet.observe(sheet, { attributes: true, attributeFilter: ['class'] });
+			}
+			return true;
+		});
+	const readLog = () => page.evaluate(() => window.__itwLog);
+
+	/**
+	 * Puts the open note's text back to `text`: in the editor, whose own save of a change made a moment ago
+	 * would otherwise write over a change made on disk, and then on disk.
+	 */
+	async function resetNote(text) {
+		await page.evaluate(async (text) => {
+			const view = app.workspace.activeLeaf.view;
+			if (view.editor.getValue() !== text) view.editor.setValue(text);
+			await view.save();
+		}, text);
+		await sleep(300);
+	}
+
+	/** The note's scroller, left to right, and whether each sheet button takes a tap at its centre (nothing drawn over it). */
+	const reach = () =>
+		page.evaluate(() => {
+			const cm = app.workspace.activeLeaf.view.editor.cm;
+			const r = cm.scrollDOM.getBoundingClientRect();
+			return {
+				pane: { left: Math.round(r.left), right: Math.round(r.right) },
+				buttons: [...document.querySelectorAll('.itw-sheet button')]
+					.filter((b) => b.getBoundingClientRect().width > 0)
+					.map((b) => {
+						const c = b.getBoundingClientRect();
+						const hit = document.elementFromPoint(c.left + c.width / 2, c.top + c.height / 2);
+						return { text: b.textContent, takesTap: hit?.closest('button') === b, hit: hit && !b.contains(hit) ? `${hit.tagName}.${String(hit.className).split(' ')[0]}` : null };
+					}),
+			};
+		});
+
+	/** Whether the text of every sheet button stays inside the button (none spills onto its neighbours). */
+	const spills = () =>
+		page.evaluate(() =>
+			[...document.querySelectorAll('.itw-sheet button')]
+				.filter((b) => b.getBoundingClientRect().width > 0)
+				.map((b) => {
+					const label = b.querySelector('.itw-sheet-choice-label') ?? b;
+					const range = document.createRange();
+					range.selectNodeContents(label);
+					const text = range.getBoundingClientRect();
+					const box = b.getBoundingClientRect();
+					return { text: b.textContent, button: [box.left, box.right].map((v) => Math.round(v * 10) / 10), label: [text.left, text.right].map((v) => Math.round(v * 10) / 10), spills: text.left < box.left - 0.5 || text.right > box.right + 0.5 };
+				}),
+		);
+
+	/**
+	 * Cases added with the fixes after the second review, once per size: a slow double tap (N5, N8) and a
+	 * layout chosen while the reveal is scrolling (N6); on a phone a rotation (N1, N4), a small keyboard in
+	 * landscape (N2) and a narrow phone in landscape (N7); on a tablet the keyboard (N3) and a pinned sidebar (N9).
+	 */
+	async function reviewCases(size) {
+		const tag = `${size}:`;
+		const filler = original.split('\n\n').filter((p) => !p.includes('![[') && !p.startsWith('#')).slice(0, 6).join('\n\n');
+		const long = `${filler}\n\n${original}`;
+		await page.keyboard.press('Escape');
+		await closeViewer();
+		await h.setNote(page, NOTE, long);
+		await h.openNote(page, OTHER, 'live');
+		await h.openNote(page, NOTE, 'live');
+		await sleep(400);
+		// Where each sheet button is while the sheet is shown: the sheet stays put whatever the note does.
+		let s = await selectPicture((x) => noteTop(x) + 40);
+		if (!s.shown) throw new Error('the sheet did not show to be measured');
+		const buttonAt = Object.fromEntries(s.buttons.map((b) => [b.text, centre(b.rect)]));
+
+		if (runs('straddle')) {
+			// ---- A slow double tap (N5, N8) ----
+			// The second press starts while the sheet the first tap brought up still lets taps through
+			// (DOUBLE_TAP_WAIT, 350 ms from its appearing) and lifts after that. Its click belongs to the picture
+			// where the press began, not to the button that is under the finger by then ("Wrap left", pressed, on
+			// a wrapped picture: it would turn wrapping off). The note stays as it was and Obsidian's viewer opens,
+			// as for a quick double tap.
+			const W = '![[landscape.png|wrap-left|320]]';
+			const longW = long.replace(LINK, W);
+			await resetNote(longW);
+			await sleep(400);
+			const at = buttonAt['Wrap left'];
+			for (const hold of [200, 400]) {
+				let second = 280; // ms from the first press to the second
+				const tries = [];
+				let s1 = null;
+				for (let i = 0; i < 3; i++) {
+					await deselect();
+					const r = await placePicture(W, at.y - 60);
+					const onPicture = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.tagName === 'IMG', at);
+					await startLog();
+					await timed([
+						[0, 'down', at.x, at.y],
+						[60, 'up'],
+						[second, 'down', at.x, at.y],
+						[second + hold, 'up'],
+					]);
+					await sleep(1300);
+					s1 = await state(page);
+					const log = await readLog();
+					const downs = log.ev.filter((e) => e.type === 'pointerdown');
+					const ups = log.ev.filter((e) => e.type === 'pointerup');
+					const clicks = log.ev.filter((e) => e.type === 'click');
+					const rel = (e) => (e && log.shown !== null ? Math.round(e.t - log.shown) : null);
+					const row = {
+						second,
+						onPicture,
+						picture: [Math.round(r.top), Math.round(r.bottom)],
+						shownAfterFirstPress: downs[0] && log.shown !== null ? Math.round(log.shown - downs[0].t) : null,
+						down2: rel(downs[1]),
+						up2: rel(ups[1]),
+						click2: clicks[1] ? `${rel(clicks[1])} ${clicks[1].where}` : null,
+						changed: diffLines(longW, s1.doc),
+						viewer: s1.lightbox,
+					};
+					row.straddled = row.down2 !== null && row.down2 < 340 && row.up2 !== null && row.up2 > 370;
+					tries.push(row);
+					if ((row.straddled && onPicture) || !onPicture) break;
+					// Aim the second press 200 ms after the sheet appeared.
+					if (row.shownAfterFirstPress !== null) second = row.shownAfterFirstPress + 200;
+					await closeViewer();
+					if (s1.doc !== longW) await resetNote(longW);
+				}
+				const last = tries[tries.length - 1];
+				check(
+					`${tag} a slow double tap (the second press held ${hold} ms, from while the sheet lets taps through to after) on a wrapped picture under the sheet changes nothing and opens the viewer`,
+					last.onPicture && last.straddled && s1.doc === longW && s1.lightbox,
+					tries,
+				);
+				await closeViewer();
+				if (s1.doc !== longW) await resetNote(longW);
+			}
+			// Once it has settled, the sheet takes a tap as before.
+			await deselect();
+			const r = await placePicture(W, noteTop(await state(page)) + 40);
+			await tapPicture(r);
+			await sleep(400);
+			await tapButton('Wrap right');
+			s = await state(page);
+			check(`${tag} after the slow double taps, a tap on the settled sheet still works`, s.shown && s.doc.includes('![[landscape.png|wrap-right|320]]'), { shown: s.shown, line: s.doc.split('\n').find((l) => l.includes('landscape.png')) });
+			await resetNote(long);
+			await sleep(400);
+		}
+
+		if (runs('reveal-tap')) {
+			// ---- A layout chosen while the reveal is still scrolling (N6) ----
+			// A single tap on a picture low on the screen, then "Top and bottom" while the note scrolls the picture
+			// clear of the sheet. The write holds the view while the new layout settles: it must hold the revealed
+			// one, not the one halfway, or the next update of the editor (made here soon after, as Obsidian makes
+			// one now and then) scrolls the note back and leaves the picture under the sheet.
+			let at = 470; // ms from the tap on the picture to the press on the button
+			const tries = [];
+			let s1 = null;
+			const b = buttonAt['Top and bottom'];
+			for (let i = 0; i < 4; i++) {
+				await deselect();
+				let s0 = await state(page);
+				const r = await placePicture(LINK, noteBottom(s0) - 110);
+				s0 = await state(page);
+				const p = { x: Math.round((r.left + r.right) / 2), y: Math.round(Math.max(r.top, noteTop(s0)) + 20) };
+				await startLog();
+				await page.evaluate(() => {
+					const cm = app.workspace.activeLeaf.view.editor.cm;
+					const log = window.__itwLog;
+					log.scrolls = [];
+					cm.scrollDOM.scrollBy = function (...a) {
+						log.scrolls.push({ t: performance.now(), from: this.scrollTop, options: a[0] });
+						return Element.prototype.scrollBy.apply(this, a);
+					};
+					window.__itwPoke = (e) => {
+						if (e.target.closest?.('.itw-sheet')) setTimeout(() => cm.dispatch({}), 150);
+					};
+					window.addEventListener('click', window.__itwPoke, true);
+				});
+				await timed([
+					[0, 'down', p.x, p.y],
+					[60, 'up'],
+					[at, 'down', b.x, b.y],
+					[at + 60, 'up'],
+				]);
+				await sleep(1500);
+				s1 = await state(page);
+				const log = await page.evaluate(() => {
+					delete app.workspace.activeLeaf.view.editor.cm.scrollDOM.scrollBy;
+					window.removeEventListener('click', window.__itwPoke, true);
+					return window.__itwLog;
+				});
+				const t0 = log.ev[0]?.t ?? 0;
+				const reveal = log.scrolls[0] ?? null;
+				const click = log.ev.find((e) => e.type === 'click' && e.where.startsWith('sheet')) ?? null;
+				const target = reveal ? reveal.from + reveal.options.top : null;
+				const row = {
+					at,
+					reveal: reveal && { t: Math.round(reveal.t - t0), from: reveal.from, by: reveal.options.top, behavior: reveal.options.behavior },
+					click: click && { t: Math.round(click.t - t0), where: click.where, scrollTop: click.scrollTop },
+					end: s1.scrollTop,
+					target,
+					line: s1.doc.split('\n').find((l) => l.includes('landscape.png')),
+					picture: s1.picture,
+					sheetTop: s1.shown ? s1.sheet.top : null,
+					uncovered: uncovered(s1),
+				};
+				row.midway = !!reveal && !!click && click.scrollTop > reveal.from + 2 && click.scrollTop < target - 2;
+				tries.push(row);
+				if (row.midway) break;
+				// Aim the press at the middle of the reveal's scroll (about 200 ms long). A press too early reaches
+				// the note through the sheet, which still lets taps through.
+				if (!click) at += 60;
+				else if (reveal) at += click.t < reveal.t ? Math.round(reveal.t - click.t) + 60 : -80;
+				await resetNote(long);
+				await sleep(300);
+			}
+			const last = tries[tries.length - 1];
+			check(
+				`${tag} a layout chosen while the reveal is still scrolling is applied, and the reveal is not undone: the picture ends clear of the sheet`,
+				last.midway && last.line === '![[landscape.png|wrap-block|320]]' && Math.abs(last.end - last.target) <= 2 && s1.shown && s1.selected && last.picture.bottom <= last.sheetTop,
+				tries,
+			);
+			await resetNote(long);
+			await sleep(300);
+		}
+
+		if (size === 'phone' && runs('rotate')) {
+			// ---- Turning the phone with the sheet up (N1, N4) ----
+			// The first look after a rotation sees the text re-wrapped at the old scroll position, which CodeMirror
+			// puts right a moment later. Whatever that first look says, the picture is revealed again once things
+			// have settled: at least 70% of it in view above the compact sheet.
+			const rows = [];
+			for (const [what, at] of [
+				['its top 200 px below the header', (x) => noteTop(x) + 200],
+				['its top 296 px below the header (revealed upright first)', (x) => noteTop(x) + 296],
+				['revealed upright from low on the screen', (x) => noteBottom(x) - 110],
+			]) {
+				await deselect();
+				const r = await placePicture(LINK, at(await state(page)));
+				await tapPicture(r);
+				await sleep(900);
+				const upright = await state(page);
+				await h.setWindowSize(page, 844, 390);
+				await sleep(1500);
+				const s1 = await state(page);
+				rows.push({
+					what,
+					upright: { shown: upright.shown, picture: upright.picture, sheet: upright.sheet },
+					landscape: { shown: s1.shown, selected: s1.selected, picture: s1.picture, sheet: s1.sheet, uncovered: uncovered(s1), scrollTop: [upright.scrollTop, s1.scrollTop] },
+				});
+				await deselect();
+				await h.setWindowSize(page, 390, 844);
+				await sleep(900);
+			}
+			check(
+				`${tag} turning the phone to landscape with the sheet up reveals the picture again, wherever it was: at least 70% in view`,
+				rows.every((x) => x.upright.shown && x.upright.picture.bottom <= x.upright.sheet.top && x.landscape.shown && x.landscape.selected && x.landscape.uncovered >= 0.7),
+				rows,
+			);
+		}
+
+		if (size === 'phone' && runs('landscape-keyboard')) {
+			// ---- A phone in landscape, no top inset, a small keyboard (N2), imitated ----
+			// An iPhone has no top inset in landscape (the emulation keeps the portrait one), so its header rests
+			// higher. A small keyboard (or a hardware keyboard's bar) leaves room for the compact sheet and a strip of
+			// the note (44 px at least); a 200 px one does not, and the sheet waits until it goes.
+			await deselect();
+			await h.setWindowSize(page, 844, 390);
+			await sleep(900);
+			await page.evaluate(() => document.body.style.setProperty('--safe-area-inset-top', '0px'));
+			await sleep(300);
+			const s0 = await selectPicture((x) => noteTop(x) + 10, true);
+			await page.evaluate(() => app.workspace.activeLeaf.view.editor.cm.focus());
+			await sleep(500);
+			const rows = [];
+			for (const kb of [100, 120, 140, 200]) {
+				await page.evaluate((kb) => document.documentElement.style.setProperty('--keyboard-height', `${kb}px`), kb);
+				await sleep(700);
+				const k = await state(page);
+				rows.push({
+					kb,
+					selected: k.selected,
+					shown: k.shown,
+					sheet: k.sheet,
+					header: k.header,
+					toolbar: k.mobileToolbar,
+					noteLeft: k.shown ? k.sheet.top - noteTop(k) : null,
+					problems: k.shown ? placeProblems(k, 'phone') : null,
+					buttons: k.shown ? seen(k).map((x) => [x.text, x.rect.width, x.rect.height]) : null,
+				});
+			}
+			await page.evaluate(() => {
+				document.documentElement.style.removeProperty('--keyboard-height');
+				document.body.style.removeProperty('--safe-area-inset-top');
+				app.workspace.activeLeaf.view.editor.cm.contentDOM.blur();
+			});
+			await sleep(600);
+			const small = rows.filter((x) => x.kb < 200);
+			const big = rows.find((x) => x.kb === 200);
+			check(
+				`${tag} landscape, no top inset, imitated keyboard 100 to 140 px: the compact sheet shows between the header and the editing toolbar, every button at least 44 x 44 px, with at least 44 px of the note in view`,
+				s0.selected && small.every((x) => x.selected && x.shown && x.problems.length === 0 && x.sheet.height <= 90 && x.noteLeft >= 44 && x.buttons.every(([, w, hh]) => w >= 44 && hh >= 44)),
+				rows,
+			);
+			check(`${tag} landscape, no top inset, imitated keyboard 200 px: no room for the note, so the sheet waits`, big.selected && !big.shown, big);
+			await deselect();
+			await h.setWindowSize(page, 390, 844);
+			await sleep(900);
+		}
+
+		if (size === 'phone' && runs('narrow')) {
+			// ---- A narrow phone in landscape (N7) ----
+			// 667 x 375 (iPhone SE 2 and 3, iPhone 6 to 8): the compact sheet is narrower, and every label still
+			// stays inside its button, pressed (bold) or not, in both themes; 844 x 390 for comparison.
+			const rows = [];
+			for (const th of themes) {
+				await page.evaluate((th) => app.changeTheme(th === 'dark' ? 'obsidian' : 'moonstone'), th);
+				for (const [w, hh] of [
+					[667, 375],
+					[844, 390],
+				]) {
+					await deselect();
+					await h.setWindowSize(page, w, hh);
+					await sleep(900);
+					await selectPicture((x) => noteTop(x) + 10);
+					await tapButton('Wrap left');
+					for (const segment of SEGMENTS) {
+						await tapButton(segment);
+						const k = await state(page);
+						const labels = await spills();
+						rows.push({ theme: th, size: `${w}x${hh}`, pressed: pressed(k), sheet: k.sheet, small: seen(k).filter((x) => x.rect.width < 44 || x.rect.height < 44).map((x) => x.text), spilling: labels.filter((x) => x.spills) });
+					}
+					await resetNote(long);
+					await sleep(300);
+				}
+			}
+			check(
+				`${tag} landscape at 667 x 375 and 844 x 390: every label of the compact sheet stays inside its button, pressed or not, every button at least 44 x 44 px`,
+				rows.length === themes.length * 2 * SEGMENTS.length && rows.every((x) => x.sheet.height <= 90 && x.small.length === 0 && x.spilling.length === 0),
+				rows,
+			);
+			await deselect();
+			await h.setWindowSize(page, 390, 844);
+			await sleep(900);
+		}
+
+		if (size === 'tablet' && runs('tablet-keyboard')) {
+			// ---- A tablet with the keyboard up (N3), imitated ----
+			// When the full sheet no longer fits between the header and the keyboard (with Obsidian's editing
+			// toolbar on it), the compact one (one row) takes its place: there is room for that on a tablet, and
+			// the sheet stays. It is full size again once the keyboard goes.
+			const s0 = await selectPicture((x) => noteTop(x) + 40, true);
+			await page.evaluate(() => app.workspace.activeLeaf.view.editor.cm.focus());
+			await sleep(500);
+			const rows = [];
+			for (const kb of [0, 250, 300, 350, 400]) {
+				await page.evaluate((kb) => document.documentElement.style.setProperty('--keyboard-height', `${kb}px`), kb);
+				await sleep(700);
+				const k = await state(page);
+				rows.push({
+					kb,
+					selected: k.selected,
+					hasFocus: k.hasFocus,
+					shown: k.shown,
+					compact: compactSheet(k),
+					sheet: k.sheet,
+					toolbar: k.mobileToolbar,
+					noteLeft: k.shown ? k.sheet.top - noteTop(k) : null,
+					problems: k.shown ? placeProblems(k, 'tablet') : null,
+					buttons: k.shown ? seen(k).map((x) => [x.text, x.rect.width, x.rect.height]) : null,
+				});
+			}
+			await page.evaluate(() => document.documentElement.style.removeProperty('--keyboard-height'));
+			await sleep(800);
+			const back = await state(page);
+			await page.evaluate(() => app.workspace.activeLeaf.view.editor.cm.contentDOM.blur());
+			await sleep(400);
+			check(
+				`${tag} (imitated keyboard 0 to 400 px, editor focused) the sheet stays: full while it fits, else compact, above the keyboard and the editing toolbar, below the header with at least 44 px of the note in view`,
+				s0.selected && rows.every((x) => x.selected && x.shown && x.problems.length === 0 && x.noteLeft >= 44 && x.buttons.every(([, w, hh]) => w >= 44 && hh >= 44)) && !rows[0].compact && rows.some((x) => x.compact),
+				rows,
+			);
+			check(`${tag} once the keyboard goes, the full sheet is back`, back.shown && back.selected && !compactSheet(back) && placeProblems(back, 'tablet').length === 0, { shown: back.shown, sheet: back.sheet, problems: back.shown ? placeProblems(back, 'tablet') : null });
+			await deselect();
+		}
+
+		if (size === 'tablet' && runs('pinned')) {
+			// ---- A tablet with a pinned sidebar (N9) ----
+			// A pinned sidebar sits beside the note, not over it, and is drawn above the sheet. The sheet stays within
+			// the note's pane, centred there, and every button takes taps, including those on the sidebar's side.
+			const steps = {
+				left: [
+					['Wrap left', '![[landscape.png|wrap-left|320]]'],
+					['None', '![[landscape.png|wrap-left|gap-0|320]]'],
+					['In line', LINK],
+				],
+				right: [
+					['Wrap right', '![[landscape.png|wrap-right|320]]'],
+					['Large', '![[landscape.png|wrap-right|gap-24|320]]'],
+					['Top and bottom', '![[landscape.png|wrap-block|gap-24|320]]'],
+				],
+			};
+			const rows = [];
+			for (const side of ['left', 'right']) {
+				await page.evaluate((side) => {
+					const split = side === 'left' ? app.workspace.leftSplit : app.workspace.rightSplit;
+					split.expand();
+					split.setPinned(true);
+				}, side);
+				await sleep(900);
+				await h.openNote(page, NOTE, 'live');
+				await selectPicture((x) => noteTop(x) + 40);
+				const k = await state(page);
+				const where = await reach();
+				const row = { side, shown: k.shown, sheet: k.sheet, pane: where.pane, problems: placeProblems(k, 'tablet', where.pane), blocked: where.buttons.filter((x) => !x.takesTap), taps: [] };
+				for (const [label, want] of steps[side]) {
+					await tapButton(label);
+					const after = await state(page);
+					// A tap that misses the sheet may reach the sidebar and make it the active view (no editor then).
+					row.taps.push({ label, line: after.doc?.split('\n').find((l) => l.includes('landscape.png')) ?? null, want, shown: after.shown, active: await page.evaluate(() => app.workspace.activeLeaf?.view.getViewType()) });
+				}
+				rows.push(row);
+				await page.evaluate((side) => {
+					const split = side === 'left' ? app.workspace.leftSplit : app.workspace.rightSplit;
+					split.setPinned(false);
+					split.collapse();
+				}, side);
+				await sleep(900);
+				await h.openNote(page, NOTE, 'live');
+				await resetNote(long);
+			}
+			check(
+				`${tag} with a sidebar pinned on either side, the sheet stays within the note's pane, a centred card there, and every button takes taps`,
+				rows.every((x) => x.shown && x.problems.length === 0 && x.blocked.length === 0 && x.taps.every((y) => y.line === y.want)),
+				rows,
+			);
+		}
+		await deselect();
 	}
 
 	for (const size of sizes) {
@@ -990,7 +1491,8 @@ const sheetProbe = probe(async (h, check, restore) => {
 			s = await state(page);
 			check(`${tag} the note is unchanged at the end`, s.doc === long, diffLines(long, s.doc));
 		}
-		await fixCases(size);
+		if (!reviewOnly) await fixCases(size);
+		await reviewCases(size);
 	}
 	// Turning the plugin off takes the sheet out of the page; turning it on again works as before.
 	await page.evaluate(() => app.plugins.disablePlugin('image-text-wrap'));
