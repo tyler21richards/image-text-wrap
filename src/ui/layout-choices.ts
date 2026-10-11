@@ -14,19 +14,34 @@ export interface WrapChoice {
 	wrap: Wrap;
 	/** Button tooltip and menu title. */
 	label: string;
+	/** The label shown under the icon on phones and tablets, where buttons carry visible text. */
+	short: string;
 	icon: string;
 }
 
 /** In the order of Word's Layout Options. */
 export const WRAP_CHOICES: readonly WrapChoice[] = [
-	{ wrap: 'none', label: 'In line with text', icon: ICON.inline },
-	{ wrap: 'left', label: 'Wrap text left', icon: ICON.left },
-	{ wrap: 'right', label: 'Wrap text right', icon: ICON.right },
-	{ wrap: 'block', label: 'Top and bottom', icon: ICON.block },
+	{ wrap: 'none', label: 'In line with text', short: 'In line', icon: ICON.inline },
+	{ wrap: 'left', label: 'Wrap text left', short: 'Wrap left', icon: ICON.left },
+	{ wrap: 'right', label: 'Wrap text right', short: 'Wrap right', icon: ICON.right },
+	{ wrap: 'block', label: 'Top and bottom', short: 'Top and bottom', icon: ICON.block },
 ];
 
 export const SPACING_LABEL = 'Spacing';
 export const SPACING_DISABLED_LABEL = 'Spacing (choose a wrap option first)';
+
+/** The spacing choices as the phone and tablet sheet shows them: one segment each, smallest first. */
+export const SPACING_CHOICES: readonly { gap: Gap; label: string }[] = [
+	{ gap: 0, label: 'None' },
+	{ gap: 8, label: 'Small' },
+	{ gap: 16, label: 'Medium' },
+	{ gap: 24, label: 'Large' },
+];
+
+/** Shown beside "Spacing" on the sheet while the picture is in line, where spacing does not apply. */
+export const SPACING_HINT = 'Choose a wrap option first';
+/** The sheet's name for screen readers. */
+export const SHEET_LABEL = 'Picture layout';
 
 /**
  * The layout after a toolbar or menu click on a wrap choice. Clicking the active wrap choice turns

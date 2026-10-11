@@ -415,6 +415,154 @@ p > img:is([alt="wrap-block"], [alt^="wrap-block|"], [alt*="|wrap-block|"], [alt
 	cursor: default;
 }
 
+/*
+ * Phones and tablets: the toolbar is a sheet docked at the bottom of the screen instead, one per window.
+ * The plugin sets --itw-sheet-bottom to clear the keyboard and Obsidian's navigation bar and editing
+ * toolbar; it never goes below the safe area. Full width on a phone (less a small margin), a centred card
+ * on a tablet. Every button is at least 44 px tall and carries a visible label: touch has no hover, so no
+ * tooltip can explain an icon. Just below Obsidian's sidebar backdrop (--layer-cover), so an open sidebar
+ * covers it, and above the note and its header.
+ */
+.itw-sheet {
+	position: fixed;
+	left: calc(var(--safe-area-inset-left, 0px) + var(--size-4-2));
+	right: calc(var(--safe-area-inset-right, 0px) + var(--size-4-2));
+	bottom: max(var(--itw-sheet-bottom, 0px), var(--safe-area-inset-bottom, 0px));
+	z-index: calc(var(--layer-cover) - 1);
+	box-sizing: border-box;
+	max-width: 480px;
+	margin: 0 auto;
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-3);
+	padding: var(--size-4-3);
+	background-color: var(--background-primary);
+	border: var(--border-width) solid var(--background-modifier-border);
+	border-radius: var(--radius-xl);
+	box-shadow: var(--shadow-l);
+	color: var(--text-normal);
+	user-select: none;
+	-webkit-user-select: none;
+	-webkit-touch-callout: none;
+	touch-action: manipulation;
+	transition:
+		opacity var(--anim-duration-fast) var(--anim-motion-swing),
+		transform var(--anim-duration-fast) var(--anim-motion-swing),
+		visibility var(--anim-duration-fast);
+}
+
+/* Hidden with visibility, like the toolbar, so it can always be measured before it is placed. */
+.itw-sheet.itw-sheet-hidden,
+body.itw-dragging .itw-sheet {
+	visibility: hidden;
+	opacity: 0;
+	transform: translateY(var(--size-4-2));
+	pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.itw-sheet {
+		transition: none;
+	}
+}
+
+.itw-sheet-choices {
+	display: grid;
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+	gap: var(--size-4-2);
+}
+
+/* As specific as Obsidian's own button rules (button:not(.clickable-icon).mobile-tap), and later. */
+.itw-sheet .itw-sheet-choice {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: var(--size-4-1);
+	height: auto;
+	min-height: var(--touch-size-xl);
+	padding: var(--size-4-2) var(--size-4-1);
+	border-radius: var(--radius-m);
+	background-color: var(--interactive-normal);
+	box-shadow: none;
+	color: var(--text-normal);
+	font-size: var(--font-ui-smaller);
+	line-height: var(--line-height-tight);
+	text-align: center;
+	white-space: normal;
+}
+
+.itw-sheet-choice-icon {
+	display: flex;
+	--icon-size: var(--icon-l);
+	--icon-stroke: var(--icon-l-stroke-width);
+}
+
+.itw-sheet-spacing-section {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-1);
+}
+
+.itw-sheet-spacing-header {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: var(--size-4-2);
+	padding: 0 var(--size-4-1);
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.itw-sheet-spacing-title {
+	font-weight: var(--font-semibold);
+}
+
+.itw-sheet-spacing-hint {
+	text-align: end;
+}
+
+.itw-sheet-spacing-hint.itw-sheet-hint-hidden {
+	visibility: hidden;
+}
+
+/* The spacing choices as one segmented row. */
+.itw-sheet-spacing {
+	display: grid;
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+	gap: var(--size-2-1);
+	padding: var(--size-2-1);
+	border-radius: var(--radius-m);
+	background-color: var(--background-secondary);
+	border: var(--border-width) solid var(--background-modifier-border);
+}
+
+.itw-sheet .itw-sheet-segment {
+	height: auto;
+	min-height: max(var(--touch-size-m), 44px);
+	padding: 0 var(--size-4-1);
+	border-radius: var(--radius-s);
+	background-color: transparent;
+	box-shadow: none;
+	color: var(--text-normal);
+	font-size: var(--font-ui-small);
+}
+
+/* Pressed: the current layout and spacing, filled with the accent colour and in bold. */
+.itw-sheet .itw-sheet-choice.is-active,
+.itw-sheet .itw-sheet-segment.is-active {
+	background-color: var(--interactive-accent);
+	color: var(--text-on-accent);
+	font-weight: var(--font-semibold);
+}
+
+/* Spacing while the picture is in line: dimmed (Obsidian also dims aria-disabled buttons), and the hint above says why. */
+.itw-sheet .itw-sheet-segment.is-disabled {
+	background-color: transparent;
+	color: var(--text-muted);
+	cursor: default;
+}
+
 /* ---------- Drag ---------- */
 
 /*
