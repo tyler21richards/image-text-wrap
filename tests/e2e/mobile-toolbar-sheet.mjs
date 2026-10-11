@@ -115,7 +115,38 @@ function noteBottom(s) {
 /** The highest point a tap on the note may use: below the note's header bar. */
 const noteTop = (s) => Math.max(s.header ? s.header.bottom : 0, 0);
 
-export default probe(async (h, check, restore) => {
+/**
+ * Runs the probe below and makes sure the window leaves mobile emulation whatever happens: the probe's own
+ * restore steps do that, this puts it right if one of them failed, and an interrupted run (Ctrl-C, a
+ * timeout's SIGTERM) turns emulation off before it exits. Emulation is stored in the profile, so a window
+ * left in it would come back as a phone at the next launch.
+ */
+export default async function run(h) {
+	const leave = async () => {
+		const still = await h.page.evaluate(() => window.app?.isMobile).catch(() => null);
+		if (still) await setMobile(h.page, false);
+	};
+	const interrupted = async (signal) => {
+		await h.page
+			.evaluate(() => {
+				window.electronWindow?.setContentSize(1280, 900);
+				if (app.isMobile) app.emulateMobile(false);
+			})
+			.catch(() => {});
+		process.exit(signal === 'SIGTERM' ? 143 : 130);
+	};
+	process.once('SIGINT', interrupted);
+	process.once('SIGTERM', interrupted);
+	try {
+		return await sheetProbe(h);
+	} finally {
+		process.off('SIGINT', interrupted);
+		process.off('SIGTERM', interrupted);
+		await leave().catch(() => {});
+	}
+}
+
+const sheetProbe = probe(async (h, check, restore) => {
 	const { page } = h;
 	const errors = h.watchErrors(page);
 	const args = h.args.filter((a) => !a.startsWith('--'));
@@ -143,6 +174,8 @@ export default probe(async (h, check, restore) => {
 			// The long press recorder (see "A long press on the sheet" below).
 			if (window.__itwVibrate) navigator.vibrate = window.__itwVibrate;
 			window.__itwBuzz = null;
+			// The double tap timer (see "A double tap on a picture low on the screen" below).
+			if (window.__itwPress) window.removeEventListener('touchstart', window.__itwPress, true);
 		}),
 	);
 
@@ -152,41 +185,89 @@ export default probe(async (h, check, restore) => {
 		await sleep(ms);
 	};
 
-	/** Closes Obsidian's image viewer with a tap on its close button, if a step opened it. */
+	/**
+	 * Closes Obsidian's image viewer with a tap on its close button, if a step opened it. On a phone or tablet
+	 * the button sits on the viewer itself (.modal-close-button, top right); on a desktop it is in the
+	 * viewer's title bar. Throws if the viewer stays open, since it covers the whole window.
+	 */
 	async function closeViewer() {
-		for (let i = 0; i < 3; i++) {
-			const p = await page.evaluate(() => {
+		const target = () =>
+			page.evaluate(() => {
 				const box = document.querySelector('.lightbox');
-				const close = box && [...box.querySelectorAll('.lightbox-titlebar .clickable-icon, .lightbox-titlebar button')].pop();
-				if (!close) return null;
+				if (!box) return null;
+				const close = box.querySelector('.modal-close-button') ?? [...box.querySelectorAll('.lightbox-titlebar .clickable-icon, .lightbox-titlebar button')].pop();
+				if (!close) return { x: 0, y: 0, button: false };
 				const r = close.getBoundingClientRect();
-				return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+				return { x: r.left + r.width / 2, y: r.top + r.height / 2, button: true };
 			});
+		for (let i = 0; i < 4; i++) {
+			const p = await target();
 			if (!p) return;
-			await tap(p, 500);
+			if (p.button) await tap(p, 500);
+			else {
+				await page.keyboard.press('Escape');
+				await sleep(500);
+			}
 		}
+		if (await target()) throw new Error("Obsidian's image viewer did not close");
 	}
 
-	/** Taps plain text in the note, clear of the bars and the sheet (this deselects any image). */
-	async function tapText() {
+	/** The first line of the note that is long plain text (no picture, not a heading), 1-based. */
+	const plainLine = (doc) => doc.split('\n').findIndex((l) => l.length >= 40 && !l.includes('![[') && !l.startsWith('#')) + 1;
+
+	/**
+	 * Where a tap lands on plain text in the note: on a line of text (no picture), inside the free band below
+	 * the header and above the sheet, the navigation bar and Obsidian's editing toolbar, at a point that
+	 * really hits that line (nothing drawn over it). Null if no such text is on screen.
+	 */
+	async function textPoint() {
 		const s = await state(page);
-		const p = await page.evaluate(
+		if (s.lightbox) return null;
+		return page.evaluate(
 			({ top, bottom }) => {
 				const cm = app.workspace.activeLeaf.view.editor.cm;
 				for (const l of cm.contentDOM.querySelectorAll('.cm-line')) {
+					if (l.querySelector('.image-embed, .cm-embed-block, .internal-link, .external-link, .tag') || l.textContent.trim().length < 20) continue;
 					const r = l.getBoundingClientRect();
-					if (l.querySelector('.image-embed, .cm-embed-block') || l.textContent.length < 40) continue;
-					if (r.top < top + 10 || r.top + 20 > bottom - 10) continue;
-					const x = r.left + 30;
-					const y = r.top + 10;
-					const hit = document.elementFromPoint(x, y);
-					if (hit && hit.closest('.cm-line') === l && !hit.closest('.image-embed')) return { x, y };
+					const from = Math.max(r.top, top + 10);
+					const to = Math.min(r.bottom, bottom - 10);
+					if (to - from < 12) continue;
+					for (const y of [from + 8, (from + to) / 2, to - 6]) {
+						for (const x of [r.left + 30, (r.left + r.right) / 2]) {
+							const hit = document.elementFromPoint(x, y);
+							if (hit && hit.closest('.cm-line') === l && !hit.closest('.image-embed, .cm-embed-block, a, .cm-widgetBuffer')) return { x: Math.round(x), y: Math.round(y) };
+						}
+					}
 				}
 				return null;
 			},
 			{ top: noteTop(s), bottom: noteBottom(s) },
 		);
-		if (!p) throw new Error('no plain text on screen to tap');
+	}
+
+	/**
+	 * Taps plain text in the note, clear of the bars and the sheet (this deselects any image). If none is on
+	 * screen (the note is scrolled to pictures, or a viewer is open), closes the viewer and scrolls the first
+	 * plain line of the note into the middle of the screen first.
+	 */
+	async function tapText() {
+		let p = await waitFor(textPoint, 1500);
+		if (!p) {
+			await closeViewer();
+			const n = plainLine((await state(page)).doc);
+			if (n > 0) {
+				await page.evaluate((n) => {
+					const cm = app.workspace.activeLeaf.view.editor.cm;
+					cm.dispatch({ effects: cm.constructor.scrollIntoView(cm.state.doc.line(n).from, { y: 'center' }) });
+				}, n);
+				await sleep(400);
+			}
+			p = await waitFor(textPoint, 3000);
+		}
+		if (!p) {
+			const s = await state(page);
+			throw new Error(`no plain text on screen to tap (${JSON.stringify({ viewer: s.lightbox, band: [noteTop(s), noteBottom(s)], sheet: s.shown ? s.sheet : null, navbar: s.navbar, toolbar: s.mobileToolbar, scrollTop: s.scrollTop })})`);
+		}
 		await tap(p);
 	}
 
@@ -228,6 +309,58 @@ export default probe(async (h, check, restore) => {
 		const bottom = Math.min(r.bottom, noteBottom(s)) - 10;
 		if (bottom <= top) throw new Error(`no part of the picture is free to tap (${JSON.stringify({ r, top, bottom })})`);
 		await tap({ x: (r.left + r.right) / 2, y: Math.min((top + bottom) / 2, top + 60) }, 700);
+	}
+
+	/**
+	 * Puts the cursor on the text just below LINK's picture with a tap there, and leaves the editor without
+	 * focus. Focusing the editor afterwards (as the keyboard opening would) then leaves the note where it is;
+	 * with the cursor far away it scrolls there, the picture leaves the screen and CodeMirror drops it, and
+	 * with it the selection.
+	 */
+	async function cursorBelowPicture() {
+		await page.evaluate((needle) => {
+			const cm = app.workspace.activeLeaf.view.editor.cm;
+			const line = cm.state.doc.lineAt(cm.state.doc.toString().indexOf(needle));
+			cm.dispatch({ effects: cm.constructor.scrollIntoView(line.to + 1, { y: 'center' }) });
+		}, LINK);
+		await sleep(400);
+		const s = await state(page);
+		const find = () =>
+			page.evaluate(
+				({ needle, top, bottom }) => {
+					const cm = app.workspace.activeLeaf.view.editor.cm;
+					const pos = cm.state.doc.lineAt(cm.state.doc.toString().indexOf(needle)).to + 1;
+					const c = cm.coordsAtPos(pos);
+					if (!c) return null;
+					const x = Math.round(c.left + 24);
+					const y = Math.round((c.top + c.bottom) / 2);
+					if (y < top + 10 || y > bottom - 10) return null;
+					const hit = document.elementFromPoint(x, y);
+					const l = hit?.closest('.cm-line');
+					return l && !hit.closest('.image-embed') && cm.posAtDOM(l) === pos ? { x, y } : null;
+				},
+				{ needle: LINK, top: noteTop(s), bottom: noteBottom(s) },
+			);
+		const p = await waitFor(find, 2000);
+		if (!p) throw new Error('the text below the picture is not on screen to tap');
+		await tap(p);
+		await page.evaluate(() => app.workspace.activeLeaf.view.editor.cm.contentDOM.blur());
+		await sleep(400);
+	}
+
+	/**
+	 * Selects LINK's picture with a tap, its top placed `at(state)` px down the window, with the editor
+	 * without focus, and returns the state then. `cursorNear`: the cursor goes on the text below the picture
+	 * first (cursorBelowPicture), for a step that then focuses the editor.
+	 */
+	async function selectPicture(at, cursorNear = false) {
+		if (cursorNear) {
+			await closeViewer();
+			await cursorBelowPicture();
+		} else await deselect();
+		const r = await placePicture(LINK, at(await state(page)));
+		await tapPicture(r);
+		return state(page);
 	}
 
 	/** Taps a sheet button by its visible text. */
@@ -300,23 +433,47 @@ export default probe(async (h, check, restore) => {
 		// picture away at once: the second tap then pressed a sheet button (on a wrapped picture, turning
 		// wrapping off) or landed on the text. Now it reaches the picture, as on a picture higher up.
 		for (const gap of [120, 200, 300]) {
-			await deselect();
-			let s0 = await state(page);
-			const r = await placePicture(LINK, noteBottom(s0) - 110);
-			s0 = await state(page);
-			const at = { x: (r.left + r.right) / 2, y: Math.min(r.top + 50, noteBottom(s0) - 20) };
-			// Where the (hidden) sheet was last shown on this screen, which is where it will appear.
-			const under = await page.evaluate(() => {
-				const b = document.querySelector('.itw-sheet').getBoundingClientRect();
-				return { left: b.left, top: b.top, right: b.right, bottom: b.bottom };
-			});
-			await t.tap(at.x, at.y);
-			await sleep(gap - 60);
-			await t.tap(at.x, at.y);
-			await sleep(1200);
-			const s = await state(page);
+			// The time between the two presses as the page sees it (touchstart to touchstart). On a busy machine
+			// it can come out well over the gap asked for, and past the double tap window (DOUBLE_TAP_WAIT, 350 ms
+			// from the sheet appearing) the second tap is a tap of its own: such a try is made again, up to three times.
+			let s;
+			let s0;
+			let at;
+			let under;
+			let seenGap = null;
+			const tries = [];
+			for (let i = 0; i < 3; i++) {
+				await deselect();
+				s0 = await state(page);
+				const r = await placePicture(LINK, noteBottom(s0) - 110);
+				s0 = await state(page);
+				at = { x: (r.left + r.right) / 2, y: Math.min(r.top + 50, noteBottom(s0) - 20) };
+				// Where the (hidden) sheet was last shown on this screen, which is where it will appear.
+				under = await page.evaluate(() => {
+					const b = document.querySelector('.itw-sheet').getBoundingClientRect();
+					return { left: b.left, top: b.top, right: b.right, bottom: b.bottom };
+				});
+				await page.evaluate(() => {
+					window.__itwPresses = [];
+					window.__itwPress ??= (e) => window.__itwPresses?.push(e.timeStamp);
+					window.removeEventListener('touchstart', window.__itwPress, true);
+					window.addEventListener('touchstart', window.__itwPress, true);
+				});
+				await t.tap(at.x, at.y);
+				await sleep(gap - 60);
+				await t.tap(at.x, at.y);
+				await sleep(1200);
+				s = await state(page);
+				const presses = await page.evaluate(() => window.__itwPresses);
+				seenGap = presses.length === 2 ? Math.round(presses[1] - presses[0]) : null;
+				tries.push(seenGap);
+				if (seenGap !== null && seenGap <= gap + 40) break;
+				await closeViewer();
+				if (s.doc !== long) await h.setNote(page, NOTE, long);
+			}
 			check(`${tag} a double tap (${gap} ms) on a picture low on the screen changes nothing in the note and opens the viewer, as higher up`, s.doc === long && s.lightbox && !s.hasFocus && !s.editableFocused, {
 				tapAt: at,
+				gapsSeen: tries,
 				sheetWillCover: at.y >= under.top && at.x >= under.left && at.x <= under.right,
 				diff: diffLines(long, s.doc),
 				viewer: s.lightbox,
@@ -368,7 +525,10 @@ export default probe(async (h, check, restore) => {
 				rec.menus.length = 0;
 				return out;
 			});
-		s = await state(page);
+		// Undo leaves the picture deselected and the sheet hidden: select it again, clear of the sheet.
+		s = await selectPicture((x) => noteTop(x) + 120);
+		await buzzRead();
+		check(`${tag} (setup) the picture is selected and the sheet up before the long presses`, s.shown && s.selected, { shown: s.shown, selected: s.selected });
 		const pressedChoice = s.buttons.find((b) => b.pressed === 'true');
 		const offSegment = s.buttons.find((b) => b.text === 'Medium');
 		const held = [];
@@ -382,7 +542,10 @@ export default probe(async (h, check, restore) => {
 			held.push({ what, ...(await buzzRead()) });
 		}
 		s = await state(page);
-		check(`${tag} a long press on the sheet does not buzz (Obsidian's own contextmenu is left uncancelled) and opens no menu`, held.every((x) => x.vibrate.length === 0 && x.open === 0 && x.menus.every((m) => !m.cancelled)) && s.shown && s.selected, held);
+		check(`${tag} a long press on the sheet does not buzz (Obsidian's own contextmenu is left uncancelled) and opens no menu`, held.every((x) => x.vibrate.length === 0 && x.open === 0 && x.menus.every((m) => !m.cancelled)) && s.shown && s.selected, {
+			held,
+			after: { shown: s.shown, selected: s.selected, link: s.doc.split('\n').find((l) => l.includes('landscape.png')) },
+		});
 		check(`${tag} (the long press reached Obsidian's iPhone and iPad handler: its contextmenu came)`, held.some((x) => x.menus.some((m) => !m.trusted)), held);
 		await page.mouse.click(centre(s.sheet).x, s.sheet.top + 6, { button: 'right' });
 		await sleep(400);
@@ -460,15 +623,21 @@ export default probe(async (h, check, restore) => {
 			uncovered: uncovered(s),
 			picture: s.picture,
 			sheet: s.sheet,
+			scrollTop: [upright.scrollTop, s.scrollTop],
 		});
 
 		// ---- A phone in landscape with the keyboard up (M9, imitated as above) ----
-		await deselect();
-		s0 = await state(page);
-		img = await placePicture(LINK, noteTop(s0) + 10);
-		await tapPicture(img);
+		// The cursor goes beside the picture first, so focusing the editor leaves the picture on screen.
+		s0 = await selectPicture((x) => noteTop(x) + 10, true);
 		await page.evaluate(() => app.workspace.activeLeaf.view.editor.cm.focus());
 		await sleep(500);
+		s = await state(page);
+		check(`${tag} landscape (setup) the picture is selected while the editor has focus, as with the keyboard up`, s0.selected && s.selected && s.hasFocus, {
+			selected: [s0.selected, s.selected],
+			hasFocus: s.hasFocus,
+			cursor: s.cursor,
+			scrollTop: [s0.scrollTop, s.scrollTop],
+		});
 		const typed = [];
 		for (const kb of [120, 160, 200, 250]) {
 			await page.evaluate((kb) => document.documentElement.style.setProperty('--keyboard-height', `${kb}px`), kb);
